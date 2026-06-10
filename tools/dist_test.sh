@@ -12,63 +12,25 @@
 
 set -e
 
-CONFIG=$1
-CHECKPOINT=$2
-GPUS=$3
-shift 3  # Remove first three args, remaining are passed to test.py
-
-if [ -z "$CONFIG" ] || [ -z "$CHECKPOINT" ] || [ -z "$GPUS" ]; then
-    echo "Usage: bash tools/dist_test.sh <config> <checkpoint> <num_gpus> [optional_args]"
-    echo ""
-    echo "Example:"
-    echo "  bash tools/dist_test.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \\"
-    echo "      work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth 4 --eval mAP"
-    exit 1
-fi
-
-# Get the Python virtual environment
-VENV_PATH="/home/guantp/pro/olmoearth_pretrain/.venv"
-if [ -f "${VENV_PATH}/bin/activate" ]; then
-    source "${VENV_PATH}/bin/activate"
-    echo "Activated Python environment: ${VENV_PATH}"
-fi
-
+CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py'
+CHECKPOINT='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/oriented_rcnn_dinov3_fpn_dior/latest.pth'
 # Set environment variables
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export NO_ALBUMENTATIONS_UPDATE=1
 
-# Print testing information
-echo "================================================"
-echo "Distributed Testing"
-echo "================================================"
-echo "Config:        ${CONFIG}"
-echo "Checkpoint:    ${CHECKPOINT}"
-echo "GPUs:          ${GPUS}"
-echo "Extra args:    $@"
-echo "================================================"
-echo ""
+MMDET_PYTHON="/home/users_model/miniconda3/envs/mmdet/bin/python"
 
-# Validate files exist
+# Check that the config file exists
 if [ ! -f "${CONFIG}" ]; then
     echo "ERROR: Config file not found: ${CONFIG}"
     exit 1
 fi
 
-if [ ! -f "${CHECKPOINT}" ]; then
-    echo "ERROR: Checkpoint not found: ${CHECKPOINT}"
-    exit 1
-fi
-
-# Build port for distributed testing
-PORT=${PORT:-29501}
-
-# Launch distributed testing
-echo "Launching distributed testing with ${GPUS} GPUs..."
-
-python -m torch.distributed.launch \
-    --nproc_per_node=${GPUS} \
-    --master_port=${PORT} \
+# python -m torch.distributed.launch \
+CUDA_VISIBLE_DEVICES=4,5,6,7 ${MMDET_PYTHON} -m torch.distributed.run \
+    --nproc_per_node=4 \
+    --master_port=29503 \
     $(dirname "$0")/test.py \
     ${CONFIG} \
     ${CHECKPOINT} \

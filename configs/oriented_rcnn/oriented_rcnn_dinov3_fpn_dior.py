@@ -36,7 +36,8 @@ model = dict(
     backbone=dict(
         type='ViTDinoV3',
         model_name='vit_base_patch16_dinov3',
-        pretrained=True,  # Auto-download weights via timm from HuggingFace hub
+        pretrained=False,  # Set False when using local checkpoint
+        checkpoint_path='/mnt/ht2-nas2/EO_test/weights/Dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',  # <-- Path to local .pth
         out_indices=(3, 5, 7, 11),
         out_channels=256,
         frozen_stages=8,
@@ -158,7 +159,7 @@ model = dict(
         rpn_proposal=dict(
             nms_pre=2000,
             max_per_img=2000,
-            nms=dict(type='nms_rotated', iou_threshold=0.8),
+            nms=dict(type='nms', iou_threshold=0.8),
             min_bbox_size=0,
         ),
         rcnn=dict(
@@ -189,14 +190,14 @@ model = dict(
         rpn=dict(
             nms_pre=2000,
             max_per_img=2000,
-            nms=dict(type='nms_rotated', iou_threshold=0.8),
+            nms=dict(type='nms', iou_threshold=0.8),
             min_bbox_size=0,
         ),
         rcnn=dict(
             nms_pre=2000,
             min_bbox_size=0,
             score_thr=0.05,
-            nms=dict(type='nms_rotated', iou_thr=0.1),
+            nms=dict(type='nms', iou_thr=0.1),
             max_per_img=2000,
         ),
     ),
@@ -268,7 +269,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=2,
+    samples_per_gpu=16,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
@@ -295,7 +296,7 @@ data = dict(
 
 # ========================== Evaluation Configuration ==========================
 evaluation = dict(
-    interval=6,  # Evaluate every N epochs
+    interval=1,  # Evaluate every N epochs
     metric='mAP',
     save_best='auto',
     rule='greater',
@@ -324,19 +325,19 @@ optimizer_config = dict(
 lr_config = dict(
     policy='CosineAnnealing',
     warmup='linear',
-    warmup_iters=500,
+    warmup_iters=150,
     warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3,
 )
 
-runner = dict(type='EpochBasedRunner', max_epochs=36)
+runner = dict(type='EpochBasedRunner', max_epochs=200)
 
 # ========================== Runtime Configuration ==========================
-checkpoint_config = dict(interval=6, max_keep_ckpts=3)
+checkpoint_config = dict(interval=5, max_keep_ckpts=3)
 
 # Logging
 log_config = dict(
-    interval=50,
+    interval=10,
     hooks=[
         dict(type='TextLoggerHook'),
     ],
@@ -358,10 +359,10 @@ gpu_ids = range(1)
 
 # OpenCV config
 opencv_num_threads = 0
-mp_start_method = 'fork'
+mp_start_method = 'spawn'
 
 # Auto-scale learning rate based on batch size
-auto_scale_lr = dict(base_batch_size=16)
+# auto_scale_lr = dict(base_batch_size=16)
 
 # ========================== Custom Hooks ==========================
 custom_hooks = []

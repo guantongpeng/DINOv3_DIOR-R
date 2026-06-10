@@ -5,12 +5,12 @@
 ## 模型架构
 
 ```
-输入 (800×800) → ViT-Base DINOv3 → SimpleFPN → Oriented RPN → Oriented RoI Head → 旋转检测框
+输入 (800×800) → ViT-Base DINOv3 (1024px) → SimpleFPN → Oriented RPN → Oriented RoI Head → 旋转检测框
 ```
 
 | 组件 | 配置 | 说明 |
 |------|------|------|
-| Backbone | ViT-Base DINOv3 | patch=16, embed=768, depth=12, frozen_stages=8 |
+| Backbone | ViT-Base DINOv3 | patch=16, embed=768, depth=12, frozen_stages=8, img_size=1024 |
 | Neck | SimpleFPN | 从同分辨率 ViT 特征构建 stride [8,16,32,64] 金字塔 |
 | RPN | OrientedRPNHead | 旋转锚点生成 + 中点偏移编码 |
 | RoI Head | OrientedStandardRoIHead | RotatedRoIAlign + 旋转框回归 (20类) |
@@ -26,6 +26,12 @@
 source /home/guantp/pro/olmoearth_pretrain/.venv/bin/activate
 ```
 
+> **PyTorch 2.7 兼容性说明**：`tools/train.py` 内置了两个 monkey-patch 以适配 PyTorch 2.7+：
+> 1. `_get_stream` 补丁 — 解决 mmcv 传递 int 给 `torch.device` 的问题
+> 2. `_use_replicated_tensor_module` 补丁 — 解决 MMDistributedDataParallel 缺少新属性的问题
+>
+> 同时请确保 config 中 `mp_start_method = 'spawn'`（非 `fork`），因为 CUDA 不支持 fork。
+
 ## 项目结构
 
 ```
@@ -36,7 +42,7 @@ mm_dino/
 │   ├── backbones/vit_dinov3.py            # DINOv3 ViT 骨干网络
 │   └── necks/simple_fpn.py                # 多尺度特征金字塔
 ├── tools/
-│   ├── train.py                           # 训练脚本
+│   ├── train.py                           # 训练脚本 (含 PyTorch 2.7 兼容补丁)
 │   ├── test.py                            # 评估脚本
 │   ├── dist_train.sh                      # 分布式训练
 │   └── dist_test.sh                       # 分布式测试
@@ -57,9 +63,12 @@ python data/prepare_dior.py --data_root ./data/DIOR-R
 期望目录结构：
 ```
 data/DIOR-R/
-├── trainval/
+├── train/
 │   ├── images/          # 训练图像
 │   └── labelTxt/        # DOTA 格式标注
+├── val/
+│   ├── images/          # 验证图像
+│   └── labelTxt/        # 验证标注
 ├── test/
 │   ├── images/          # 测试图像
 │   └── labelTxt/        # 测试标注
@@ -69,22 +78,22 @@ data/DIOR-R/
 ### 2. 训练
 
 ```bash
-# 单 GPU
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
+# 方式一：直接运行 dist_train.sh（使用 4,5,6,7 号 GPU，4 卡）
+bash tools/dist_train.sh
 
-# 多 GPU (4 卡)
-bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
+# 方式二：单 GPU 训练
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
 
 # 从检查点恢复
 python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    --resume-from work_dirs/oriented_rcnn_dinov3_fpn_dior/latest.pth
+    --resume-from work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_6.pth
 ```
 
 ### 3. 评估
 
 ```bash
 python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth --eval mAP
+    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_6.pth --eval mAP
 ```
 
 ### 4. 训练参数调优
@@ -96,8 +105,11 @@ python tools/train.py ... --cfg-options optimizer.lr=5e-5
 # 调整冻结层数
 python tools/train.py ... --cfg-options "model.backbone.frozen_stages=4"
 
+# 跳过验证加速训练
+python tools/train.py ... --no-validate
+
 # 显存不足时减小批次
-python tools/train.py ... --cfg-options data.samples_per_gpu=1 model.backbone.with_cp=True
+python tools/train.py ... --cfg-options data.samples_per_gpu=4 data.workers_per_gpu=2
 ```
 
 ## DIOR-R 数据集 (20 类)
@@ -120,15 +132,16 @@ python tools/train.py ... --cfg-options data.samples_per_gpu=1 model.backbone.wi
 
 ## 训练配置
 
-| 配置 | 值 |
-|------|-----|
-| 优化器 | AdamW (lr=1e-4, weight_decay=0.05) |
-| 学习率调度 | CosineAnnealing + 500 iter warmup |
-| 层级衰减 | 0.9× per layer |
-| 批次大小 | 2/GPU |
-| 训练轮数 | 36 |
-| 混合精度 | fp16 |
-| 梯度裁剪 | max_norm=35 |
+| 配置 | 值 | 说明 |
+|------|-----|------|
+| 优化器 | AdamW (lr=1e-4, weight_decay=0.05) | backbone lr_mult=0.1 |
+| 学习率调度 | CosineAnnealing + 500 iter warmup | min_lr_ratio=1e-3 |
+| 层级衰减 | backbone lr_mult=0.1 | 冻结前 8 层 |
+| 批次大小 | 16/GPU × 4 GPU = 64 | workers_per_gpu=4 |
+| 训练轮数 | 100 | evaluation interval=6 |
+| 混合精度 | fp16 (loss_scale=512) | |
+| 梯度裁剪 | max_norm=35 | |
+| 多进程方式 | spawn | 必须用 spawn（CUDA 不支持 fork） |
 
 ## 参考
 

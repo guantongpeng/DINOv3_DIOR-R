@@ -145,7 +145,14 @@ def parse_args():
         '--local_rank',
         type=int,
         default=0,
-        help='Local rank for distributed testing',
+        help='Local rank for distributed training (legacy)'
+    )
+    parser.add_argument(
+        '--local-rank',
+        dest='local_rank',          # 将值存储到 args.local_rank
+        type=int,
+        default=0,
+        help='Local rank for distributed training (new torch.distributed.launch)'
     )
 
     return parser.parse_args()

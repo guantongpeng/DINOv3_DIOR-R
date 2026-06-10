@@ -64,6 +64,17 @@ def _install_get_stream_patch():
 
 _install_get_stream_patch()
 
+
+# Monkey-patch: fix mmcv MMDistributedDataParallel compatibility with PyTorch 2.7+
+# PyTorch 2.7's DDP.forward() calls _run_ddp_forward(), which accesses
+# _use_replicated_tensor_module (new PyTorch attribute that mmcv doesn't set).
+def _install_mmddp_patch():
+    from mmcv.parallel import MMDistributedDataParallel
+    if not hasattr(MMDistributedDataParallel, '_use_replicated_tensor_module'):
+        MMDistributedDataParallel._use_replicated_tensor_module = False
+
+_install_mmddp_patch()
+
 from mmcv import Config, DictAction
 from mmcv.runner import (
     HOOKS,
@@ -158,7 +169,14 @@ def parse_args():
         '--local_rank',
         type=int,
         default=0,
-        help='Local rank for distributed training',
+        help='Local rank for distributed training (legacy)'
+    )
+    parser.add_argument(
+        '--local-rank',
+        dest='local_rank',          # 将值存储到 args.local_rank
+        type=int,
+        default=0,
+        help='Local rank for distributed training (new torch.distributed.launch)'
     )
 
     return parser.parse_args()
@@ -301,6 +319,12 @@ def main():
 
     # Add output attribute to model for compatibility
     model.CLASSES = datasets[0].CLASSES
+
+    if distributed:
+        # Set find_unused_parameters=True for DDP to handle parameters
+        # that are not used in loss computation (e.g., frozen backbone layers)
+        cfg.find_unused_parameters = True
+        logger.info("find_unused_parameters=True is enabled in DDP, allowing some parameters to be excluded from gradient computation.")
 
     # Train
     train_detector(
