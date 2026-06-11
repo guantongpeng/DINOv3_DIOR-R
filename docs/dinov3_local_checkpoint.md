@@ -68,7 +68,11 @@ checkpoint_path='checkpoints/dinov3_vit_base_patch16.pth',
 ### Step 3: 正常启动训练
 
 ```bash
+# DIOR-R
 python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
+
+# Star-1021+Extend3
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py
 ```
 
 启动时会输出日志：

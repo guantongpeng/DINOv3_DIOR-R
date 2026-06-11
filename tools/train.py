@@ -30,6 +30,8 @@ Environment:
 import argparse
 import copy
 import os
+os.environ.setdefault('OPENCV_LOG_LEVEL', 'ERROR')
+os.environ.setdefault('OPENCV_IO_LOG_LEVEL', 'ERROR')
 import os.path as osp
 import sys
 import time
@@ -43,6 +45,13 @@ if _proj_root not in sys.path:
 import mmcv
 import mmrotate
 import torch
+
+import cv2
+try:
+    cv2.setLogLevel(0)
+except AttributeError:
+    pass
+
 
 # Monkey-patch: fix mmcv 1.x compatibility with PyTorch 2.7+
 # PyTorch 2.7 _get_stream expects torch.device, but mmcv 1.x passes raw ints.
@@ -195,13 +204,14 @@ def main():
     if cfg.get('cudnn_benchmark', False):
         torch.backends.cudnn.benchmark = True
 
-    # Set work directory
+    # Set work directory with timestamp suffix to avoid overwriting
     if args.work_dir is not None:
         cfg.work_dir = args.work_dir
     elif cfg.get('work_dir', None) is None:
+        run_ts = time.strftime('%Y%m%d_%H%M%S')
         cfg.work_dir = osp.join(
             './work_dirs',
-            osp.splitext(osp.basename(args.config))[0],
+            f"{osp.splitext(osp.basename(args.config))[0]}_{run_ts}",
         )
 
     # Auto resume

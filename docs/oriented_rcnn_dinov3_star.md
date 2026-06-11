@@ -1,8 +1,8 @@
-# Oriented R-CNN + DINOv3 Backbone for DIOR-R Fine-tuning
+# Oriented R-CNN + DINOv3 Backbone for Star-1021+Extend3 Fine-tuning
 
 ## 概览 | Overview
 
-本项目基于 [MMRotate](https://github.com/open-mmlab/mmrotate) 框架，使用 **DINOv3** (Meta AI) 作为骨干网络，**Oriented R-CNN** 作为检测头，对 **DIOR-R** 遥感图像数据集进行旋转目标检测微调。
+本项目基于 [MMRotate](https://github.com/open-mmlab/mmrotate) 框架，使用 **DINOv3** (Meta AI) 作为骨干网络，**Oriented R-CNN** 作为检测头，对 **Star-1021+Extend3** 遥感图像数据集进行旋转目标检测微调。
 
 ### 模型架构
 
@@ -37,11 +37,11 @@
 │  Oriented Standard RoI Head │  ← 旋转RoI检测头
 │  - RotatedRoIAlign          │
 │  - 旋转边界框回归 (5参数)     │
-│  - 20类分类                 │
+│  - 25类分类                 │
 └──────────┬──────────────────┘
            │
            ▼
-    检测结果 (cx, cy, w, h, a)
+     检测结果 (cx, cy, w, h, a)
 ```
 
 ## 项目结构 | Project Structure
@@ -50,8 +50,7 @@
 mm_dino/
 ├── configs/
 │   └── oriented_rcnn/
-│       ├── oriented_rcnn_dinov3_fpn_dior.py   # DIOR-R 训练配置
-│       └── oriented_rcnn_dinov3_fpn_star.py   # Star-1021+Extend3 训练配置
+│       └── oriented_rcnn_dinov3_fpn_star.py   # 训练配置
 ├── models/
 │   ├── __init__.py
 │   ├── backbones/
@@ -75,8 +74,8 @@ mm_dino/
 │   ├── prepare_dior.py                        # DIOR-R 数据集准备
 │   └── prepare_star.py                        # Star-1021+Extend3 数据集准备
 └── docs/
-    ├── oriented_rcnn_dinov3_dior.md           # 本文档
-    └── oriented_rcnn_dinov3_star.md           # Star-1021+Extend3 文档
+    ├── oriented_rcnn_dinov3_dior.md           # DIOR-R 文档
+    └── oriented_rcnn_dinov3_star.md           # 本文档
 ```
 
 ## 环境要求 | Requirements
@@ -102,91 +101,88 @@ pip install timm>=0.9.0
 
 ## 数据集准备 | Dataset Preparation
 
-### DIOR-R 数据集简介
+### Star-1021+Extend3 数据集简介
 
-DIOR-R 是一个大规模遥感图像旋转目标检测基准数据集：
-- **图像数量**: 23,463张
-- **实例数量**: 192,472个旋转边界框
-- **类别数量**: 20个
-- **图像尺寸**: 800×800像素
-- **标注格式**: DOTA格式 (四点坐标 + 类别)
+Star-1021+Extend3 是一个扩展的遥感图像旋转目标检测数据集：
+- **类别数量**: 25个
+- **图像格式**: TIFF 文件 (.tif)
+- **标注格式**: YOLO OBB 格式 (四点归一化坐标 + class_id)
+- **数据划分**: train / val / test
 
-### 20个目标类别
+### 25个目标类别
 
-| 序号 | 类别名 (英文) | 中文 |
-|------|-------------|------|
-| 1 | airplane | 飞机 |
-| 2 | airport | 机场 |
-| 3 | baseballfield | 棒球场 |
-| 4 | basketballcourt | 篮球场 |
-| 5 | bridge | 桥梁 |
-| 6 | chimney | 烟囱 |
-| 7 | dam | 水坝 |
-| 8 | Expressway-Service-area | 高速公路服务区 |
-| 9 | Expressway-toll-station | 高速公路收费站 |
-| 10 | golffield | 高尔夫球场 |
-| 11 | groundtrackfield | 田径场 |
-| 12 | harbor | 港口 |
-| 13 | overpass | 立交桥 |
-| 14 | ship | 船舶 |
-| 15 | stadium | 体育场 |
-| 16 | storagetank | 储罐 |
-| 17 | tenniscourt | 网球场 |
-| 18 | trainstation | 火车站 |
-| 19 | vehicle | 车辆 |
-| 20 | windmill | 风车 |
+| 序号 | 类别名 | 中文 |
+|------|--------|------|
+| 0 | 两栖攻击舰 | Amphibious Assault Ship |
+| 1 | 侦察机 | Reconnaissance Aircraft |
+| 2 | 加油机 | Tanker Aircraft |
+| 3 | 反潜巡逻机 | Anti-submarine Patrol Aircraft |
+| 4 | 商业客机 | Commercial Airliner |
+| 5 | 坦克 | Tank |
+| 6 | 导弹快艇 | Missile Boat |
+| 7 | 巡洋舰 | Cruiser |
+| 8 | 扫雷艇 | Minesweeper |
+| 9 | 护卫舰 | Frigate |
+| 10 | 机场 | Airport |
+| 11 | 武装直升机 | Attack Helicopter |
+| 12 | 民用客轮 | Civilian Passenger Ship |
+| 13 | 登陆舰 | Landing Ship |
+| 14 | 空天战斗机 | Aerospace Fighter |
+| 15 | 航空母舰 | Aircraft Carrier |
+| 16 | 补给舰 | Supply Ship |
+| 17 | 装甲运输车 | Armored Transport Vehicle |
+| 18 | 轰炸机 | Bomber |
+| 19 | 运输机 | Transport Aircraft |
+| 20 | 通用直升机 | Utility Helicopter |
+| 21 | 重型运输车 | Heavy Transport Vehicle |
+| 22 | 隐身战斗机 | Stealth Fighter |
+| 23 | 预警机 | Early Warning Aircraft |
+| 24 | 驱逐舰 | Destroyer |
 
-### 下载与解压
+### 数据转换
 
-从以下渠道下载DIOR-R数据集：
-
-1. **官方渠道** (推荐): https://gcheng-nwpu.github.io/
-2. **OpenDataLab**: https://opendatalab.com/DIOR
-3. **PapersWithCode**: https://paperswithcode.com/dataset/dior
-
-下载后解压到 `data/DIOR-R/` 目录：
-```bash
-# 创建目录
-mkdir -p data/DIOR-R
-
-# 解压数据集
-unzip DIOR-R.zip -d data/DIOR-R/
-# 或
-unzip DIOR.zip -d data/DIOR-R/
-```
-
-### 运行数据准备脚本
+由于 Star-1021+Extend3 的标注格式为 YOLO OBB（归一化四点坐标），需要先转换为 DOTA 格式才能用于 MMRotate 训练。
 
 ```bash
-# 创建目录结构并验证数据
-python data/prepare_dior.py --data_root ./data/DIOR-R
-
-# 创建 train/val 分割
-python data/prepare_dior.py --data_root ./data/DIOR-R --val_ratio 0.1 --seed 42
+# 转换 train/val/test 三个子集
+python data/prepare_star.py \
+    --data_root data/star-1021_1016+extend3 \
+    --splits train val test
 ```
 
 ### 期望的目录结构
 
+原始数据集 (只读):
 ```
-data/DIOR-R/
-├── trainval/
-│   ├── images/              # 训练+验证图像
-│   │   ├── 00001.jpg
-│   │   └── ...
-│   └── labelTxt/            # DOTA格式标注
-│       ├── 00001.txt
-│       └── ...
+/mnt/ht2-nas2/00-model/Datasets/star-1021_1016+extend3/
+├── train/
+│   ├── images/              # 训练图像 (.tif)
+│   ├── labels/              # YOLO OBB 标注 (原始)
+├── val/
+│   ├── images/
+│   ├── labels/
 ├── test/
-│   ├── images/              # 测试图像
-│   │   ├── 00001.jpg
-│   │   └── ...
-│   └── labelTxt/            # 测试标注
-│       ├── 00001.txt
-│       └── ...
-└── ImageSets/               # 训练/验证/测试划分
-    ├── train.txt
-    ├── val.txt
-    └── test.txt
+│   ├── images/
+│   ├── labels/
+└── DIOR-obb_star_1021-extend3.yaml  # 原始 YOLO 配置文件
+```
+
+项目本地数据目录 (images/labels 由 symlink 映射):
+```
+data/star-1021_1016+extend3/
+├── train/
+│   ├── images/ → (symlink)   # 原始图像
+│   ├── labels/ → (symlink)   # 原始 YOLO 标注
+│   └── labelTxt/             # DOTA 标注 (由 prepare_star.py 生成)
+├── val/
+│   ├── images/ → (symlink)
+│   ├── labels/ → (symlink)
+│   └── labelTxt/
+├── test/
+│   ├── images/ → (symlink)
+│   ├── labels/ → (symlink)
+│   └── labelTxt/
+└── classes.txt               # 类别列表 (由 prepare_star.py 生成)
 ```
 
 ### DOTA标注格式
@@ -195,9 +191,13 @@ data/DIOR-R/
 ```
 x1 y1 x2 y2 x3 y3 x4 y4 category difficult
 ```
-- `(x1,y1) ... (x4,y4)`: 四个角点坐标 (顺时针，从左上角开始)
-- `category`: 目标类别名
-- `difficult`: 困难标记 (0或1)
+- `(x1,y1) ... (x4,y4)`: 四个角点坐标 (绝对像素坐标)
+- `category`: 目标类别名（中文）
+- `difficult`: 困难标记 (0 或 1)
+
+### 备注：无需 train/val 划分
+
+Star-1021+Extend3 数据集已经提供了 train/val/test 三个子集的划分，直接使用即可。
 
 ## 模型详情 | Model Details
 
@@ -245,7 +245,7 @@ Oriented R-CNN 是专为旋转目标检测设计的二阶段检测器。
 
 **第二阶段 - Oriented RoI Head**:
 - RotatedRoIAlign: 旋转RoI特征提取
-- 全连接分类头 (20类)
+- 全连接分类头 (25类)
 - DeltaXYWHAOBBoxCoder: 旋转边界框回归 (cx, cy, w, h, a)
 
 ### 训练策略
@@ -254,106 +254,119 @@ Oriented R-CNN 是专为旋转目标检测设计的二阶段检测器。
 |--------|-----|------|
 | 优化器 | AdamW | 带权重衰减 |
 | 学习率 | 1e-4 | 骨干网络使用0.1×倍率 |
-| 层级学习率衰减 | 0.9 | 每深入一层衰减 |
 | 学习率策略 | CosineAnnealing | 余弦退火 |
-| Warmup | 500 iter | 线性预热 |
-| 批次大小 | 2/GPU | 800×800图像 |
-| 训练轮数 | 36 | ~12小时 (4×GPU) |
+| Warmup | 150 iter | 线性预热 |
+| 批次大小 | 16/GPU | 800×800图像 |
+| 训练轮数 | 200 | - |
 | 混合精度 | fp16 | 加速训练 |
 | 梯度裁剪 | max_norm=35 | 稳定训练 |
 
 ## 使用方法 | Usage
 
-### 1. 单GPU训练
+### 1. 数据预处理
+
+```bash
+# 首先转换标注格式
+python data/prepare_star.py \
+    --data_root data/star-1021_1016+extend3
+```
+
+### 2. 单GPU训练
 
 ```bash
 conda activate mmdet
 
 # 基础训练
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py
 
 # 指定工作目录
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    --work-dir work_dirs/my_experiment
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
+    --work-dir work_dirs/oriented_rcnn_dinov3_fpn_star
 
 # 从检查点恢复
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    --resume-from work_dirs/oriented_rcnn_dinov3_fpn_dior/latest.pth
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
+    --resume-from work_dirs/oriented_rcnn_dinov3_fpn_star/latest.pth
 ```
 
-### 2. 多GPU分布式训练
+### 3. 多GPU分布式训练
 
 ```bash
-# 4 GPU训练
-bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
+# 使用快捷脚本（4卡，GPU 4,5,6,7）
+bash tools/dist_train_star.sh
+
+# 通用方式：4 GPU训练
+bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py 4
 
 # 8 GPU训练
-bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 8 \
-    --work-dir work_dirs/my_experiment
+bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py 8 \
+    --work-dir work_dirs/oriented_rcnn_dinov3_fpn_star
 
 # 指定GPU
 CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh \
-    configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
+    configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py 4
 ```
 
-### 3. 调优训练参数
+### 4. 调优训练参数
 
 ```bash
 # 覆盖学习率
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
     --cfg-options optimizer.lr=5e-5
 
 # 覆盖批次大小
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
     --cfg-options data.samples_per_gpu=4
 
 # 调整冻结层数
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
     --cfg-options "model.backbone.frozen_stages=4"
 ```
 
-### 4. 模型评估
+### 5. 模型评估
 
 ```bash
-# 单GPU评估
-python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth \
-    --eval mAP
+# 单GPU评估 (默认 mAP_coco: mAP@50:95 + 10 个 IoU 阈值)
+python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
+    work_dirs/oriented_rcnn_dinov3_fpn_star/epoch_200.pth \
+    --eval mAP_coco
 
 # 多GPU评估
-bash tools/dist_test.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth 4 \
-    --eval mAP
+bash tools/dist_test.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
+    work_dirs/oriented_rcnn_dinov3_fpn_star/epoch_200.pth 4 \
+    --eval mAP_coco
+
+# 使用其他评估模式
+python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
+    work_dirs/oriented_rcnn_dinov3_fpn_star/epoch_200.pth \
+    --eval mAP_multi   # mAP@0.50 + mAP@0.75
 
 # 保存检测结果
-python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth \
-    --out results.pkl --eval mAP
-
-# 可视化检测结果
-python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth \
-    --show --show-dir vis_results --show-score-thr 0.3
+python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
+    work_dirs/oriented_rcnn_dinov3_fpn_star/epoch_200.pth \
+    --out results.pkl --eval mAP_coco
 ```
 
-### 5. 模型推理
+**支持的评估模式**:
+| 模式 | 输出指标 | 说明 |
+|------|---------|------|
+| `mAP` | mAP@<iou_thr> | 单个 IoU 阈值 (默认 0.5) |
+| `mAP_multi` | mAP@0.50, mAP@0.75 | 常用双阈值 |
+| `mAP_coco` | mAP@50:95 + 10 个阈值 | COCO 风格多阈值平均 |
+
+### 6. 模型推理
 
 ```python
 import torch
 from mmdet.apis import init_detector, inference_detector
-from mmrotate.core import visualize
 
 # 加载模型
-config_file = 'configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py'
-checkpoint_file = 'work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth'
+config_file = 'configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py'
+checkpoint_file = 'work_dirs/oriented_rcnn_dinov3_fpn_star/epoch_200.pth'
 model = init_detector(config_file, checkpoint_file, device='cuda:0')
 
 # 推理单张图片
-img = 'data/DIOR-R/test/images/00001.jpg'
+img = 'data/star-1021_1016+extend3/test/images/000000293.tif'
 result = inference_detector(model, img)
-
-# 可视化结果
-visualize(img, result, out_file='result.jpg')
 ```
 
 ## 预训练模型选择 | DINOv3 Model Variants
@@ -378,16 +391,6 @@ backbone=dict(
     frozen_stages=6,  # 相应调整
     ...
 )
-
-# 使用ViT-Large (更高精度，需要更多显存)
-backbone=dict(
-    type='ViTDinoV3',
-    model_name='vit_large_patch16_dinov3',
-    out_indices=(5, 11, 17, 23),  # 24层中提取
-    out_channels=256,
-    frozen_stages=16,
-    ...
-)
 ```
 
 ## 性能优化 | Optimization Tips
@@ -407,23 +410,23 @@ backbone=dict(
 1. **减小冻结层数**: `frozen_stages=4` (更多层参与训练)
 2. **使用更大backbone**: ViT-Large 或 ViT-Huge
 3. **多尺度训练**: 添加 `img_scale=[(800,800), (1024,1024)]`
-4. **延长训练**: `runner.max_epochs=72`
+4. **延长训练**: `runner.max_epochs=300`
 5. **EMA**: 添加指数移动平均hook
 
 ### 常见配置调整
 
 ```bash
 # 显存不足? 使用以下配置
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
     --cfg-options \
         data.samples_per_gpu=1 \
         model.backbone.with_cp=True \
         model.neck.num_outs=3
 
 # 精度不够? 使用以下配置
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py \
     --cfg-options \
-        runner.max_epochs=72 \
+        runner.max_epochs=300 \
         model.backbone.frozen_stages=4 \
         optimizer.lr=5e-5
 ```
@@ -451,20 +454,20 @@ pip install timm>=0.9.0
 
 ### 3. 数据路径错误
 ```
-FileNotFoundError: data/DIOR-R/trainval/images/
+FileNotFoundError: .../labelTxt/...
 ```
 **解决方案**:
-- 按照 "数据集准备" 章节重新组织数据
-- 运行 `python data/prepare_dior.py` 验证
+- 确保已运行 `python data/prepare_star.py` 进行数据转换
+- 检查 `data_root` 路径是否正确
 
-### 4. 预训练权重下载失败
+### 4. TIFF 图片读取问题
 ```
-Error loading pretrained weights
+[WARNING] Cannot read image
 ```
 **解决方案**:
-- 检查网络连接 (timm需要联网下载权重)
-- 手动下载权重到 `~/.cache/torch/hub/checkpoints/`
-- 或设置 `pretrained=False` 从零开始训练
+- 确保系统已安装 libtiff
+- `apt-get install libtiff5-dev` (Ubuntu) 或 `yum install libtiff-devel` (CentOS)
+- 如果 PIL 无法读取 .tif，检查 `img_ext` 配置是否正确
 
 ### 5. 分布式训练端口冲突
 ```
@@ -473,7 +476,7 @@ Address already in use
 **解决方案**:
 ```bash
 # 使用不同端口
-PORT=29501 bash tools/dist_train.sh ... 4
+PORT=29501 bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py 4
 ```
 
 ## 参考 | References
@@ -487,10 +490,7 @@ PORT=29501 bash tools/dist_train.sh ... 4
 3. **MMRotate**: [OpenMMLab MMRotate](https://github.com/open-mmlab/mmrotate)
    - Zhou, Y., et al. "MMRotate: A Rotated Object Detection Benchmark using PyTorch." ACM MM 2022.
 
-4. **DIOR-R**: [DIOR Dataset](https://gcheng-nwpu.github.io/)
-   - Li, K., et al. "Object Detection in Optical Remote Sensing Images: A Survey and A New Benchmark." ISPRS 2020.
-
-5. **ViTDet**: [Exploring Plain Vision Transformer Backbones for Object Detection](https://arxiv.org/abs/2203.16527)
+4. **ViTDet**: [Exploring Plain Vision Transformer Backbones for Object Detection](https://arxiv.org/abs/2203.16527)
    - Li, Y., et al. "Exploring Plain Vision Transformer Backbones for Object Detection." ECCV 2022.
 
 ## 许可 | License

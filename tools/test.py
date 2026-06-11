@@ -69,6 +69,24 @@ from mmdet.utils import setup_multi_processes
 
 from mmrotate import __version__ as mmrotate_version
 
+# Monkey-patch mmcv scatter to fix compatibility with PyTorch >= 2.7
+import mmcv.parallel._functions as _mmcv_funcs
+
+@staticmethod
+def _patched_scatter_forward(target_gpus, input):
+    # Convert integer device IDs to torch.device for PyTorch >= 2.x compat
+    target_gpus = [torch.device('cuda', d) if isinstance(d, int) else d for d in target_gpus]
+    input_device = _mmcv_funcs.get_input_device(input)
+    streams = None
+    if input_device == -1 and target_gpus != [-1]:
+        streams = [_mmcv_funcs._get_stream(device) for device in target_gpus]
+    outputs = _mmcv_funcs.scatter(input, target_gpus, streams)
+    if streams is not None:
+        _mmcv_funcs.synchronize_stream(outputs, target_gpus, streams)
+    return tuple(outputs) if isinstance(outputs, list) else (outputs, )
+
+_mmcv_funcs.Scatter.forward = _patched_scatter_forward
+
 
 def parse_args():
     parser = argparse.ArgumentParser(

@@ -1,8 +1,8 @@
 # =============================================================================
-# Oriented R-CNN with DINOv3 Backbone for DIOR-R Dataset
+# Oriented R-CNN with DINOv3 Backbone for Star-1021+Extend3 Dataset
 # =============================================================================
 # This configuration fine-tunes DINOv3 (ViT-Base) as the backbone for
-# Oriented R-CNN on the DIOR-R remote sensing dataset.
+# Oriented R-CNN on the Star-1021+Extend3 remote sensing dataset.
 #
 # Model Architecture:
 #   Backbone: ViT-Base DINOv3 (pretrained, frozen first 8 blocks)
@@ -10,7 +10,7 @@
 #   RPN: OrientedRPNHead
 #   ROI Head: OrientedStandardRoIHead with OrientedBBoxHead
 #
-# Dataset: DIOR-R (20 classes, oriented bounding boxes)
+# Dataset: Star-1021+Extend3 (25 classes, oriented bounding boxes)
 # =============================================================================
 
 _base_ = []
@@ -22,7 +22,7 @@ custom_imports = dict(
     imports=[
         'models.backbones.vit_dinov3',
         'models.necks.simple_fpn',
-        'models.datasets.dior',
+        'models.datasets.star',
     ],
     allow_failed_imports=False,
 )
@@ -37,7 +37,7 @@ model = dict(
         type='ViTDinoV3',
         model_name='vit_base_patch16_dinov3',
         pretrained=False,  # Set False when using local checkpoint
-        checkpoint_path='/mnt/ht2-nas2/EO_test/weights/Dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',  # <-- Path to local .pth
+        checkpoint_path='/mnt/ht2-nas2/EO_test/weights/Dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
         out_indices=(3, 5, 7, 11),
         out_channels=256,
         frozen_stages=-1,
@@ -112,7 +112,7 @@ model = dict(
             in_channels=256,
             fc_out_channels=1024,
             roi_feat_size=7,
-            num_classes=20,  # DIOR-R has 20 classes
+            num_classes=25,  # Star-1021+Extend3 has 25 classes
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
                 angle_range='le90',
@@ -205,9 +205,9 @@ model = dict(
 
 # ========================== Dataset Configuration ==========================
 
-# DIOR-R dataset with 20 remote sensing object categories
-dataset_type = 'DIORDataset'
-data_root = 'data/DIOR-R/'
+# Star-1021+Extend3 dataset with 25 remote sensing object categories
+dataset_type = 'StarDataset'
+data_root = '/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/star-1021_1016+extend3/'
 
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53],
@@ -215,7 +215,7 @@ img_norm_cfg = dict(
     to_rgb=True,
 )
 
-# Image size for DIOR-R (resize to 800x800)
+# Image size (resize to 800x800)
 image_size = (800, 800)
 
 # -------------------------- Training Pipeline --------------------------
@@ -314,9 +314,7 @@ optimizer = dict(
     betas=(0.9, 0.999),
     weight_decay=0.05,
     paramwise_cfg=dict(
-        custom_keys={
-            'backbone': dict(lr_mult=0.1),  # Lower lr for pretrained backbone
-        },
+        custom_keys={},
     ),
 )
 
@@ -363,9 +361,6 @@ gpu_ids = range(1)
 # OpenCV config
 opencv_num_threads = 0
 mp_start_method = 'spawn'
-
-# Auto-scale learning rate based on batch size
-# auto_scale_lr = dict(base_batch_size=16)
 
 # ========================== Custom Hooks ==========================
 custom_hooks = []

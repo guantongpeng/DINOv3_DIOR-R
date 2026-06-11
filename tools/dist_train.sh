@@ -9,6 +9,10 @@
 #   bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
 #   bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 8 --work-dir work_dirs/my_exp
 #   bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4 --resume-from work_dirs/.../latest.pth
+#   bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py 4
+# 
+# Quick shortcuts (hardcoded GPU configs):
+#   bash tools/dist_train_star.sh    # Star-1021+Extend3 on GPUs 4,5,6,7
 # =============================================================================
 
 set -e
@@ -29,7 +33,7 @@ if [ ! -f "${CONFIG}" ]; then
     exit 1
 fi
 
-CUDA_VISIBLE_DEVICES=4,5,6,7 ${MMDET_PYTHON} -m torch.distributed.run \
+CUDA_VISIBLE_DEVICES=2,4,5,6 ${MMDET_PYTHON} -m torch.distributed.run \
     --nproc_per_node=4 \
     --master_port=29504 \
     $(dirname "$0")/train.py \

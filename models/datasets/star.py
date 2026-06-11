@@ -1,9 +1,11 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-"""DIOR-R Dataset for mmrotate.
+"""Star-1021+Extend3 Dataset for mmrotate.
 
-DIOR-R is a large-scale benchmark dataset for oriented object detection
-in aerial/remote sensing images. It contains 23,463 images and 192,472
-oriented bounding box instances across 20 object categories.
+The Star-1021+Extend3 dataset is an OBB (Oriented Bounding Box) dataset
+containing 25 remote sensing target categories with Chinese names.
+
+Annotations are in YOLO OBB format (normalized) and must be converted
+to DOTA format before use. Run `python data/prepare_star.py` first.
 
 The annotations are in DOTA format (txt files with 8 corner coordinates
 per line: x1 y1 x2 y2 x3 y3 x4 y4 category difficult).
@@ -21,11 +23,11 @@ from mmrotate.datasets.dota import DOTADataset
 
 
 @ROTATED_DATASETS.register_module()
-class DIORDataset(DOTADataset):
-    """DIOR-R dataset for oriented object detection.
+class StarDataset(DOTADataset):
+    """Star-1021+Extend3 dataset for oriented object detection.
 
-    DIOR-R contains 20 remote sensing object categories with oriented
-    bounding box annotations in DOTA format.
+    Contains 25 remote sensing object categories with oriented
+    bounding box annotations in DOTA format (after conversion).
 
     Args:
         ann_file (str): Path to annotation folder containing .txt files.
@@ -36,32 +38,16 @@ class DIORDataset(DOTADataset):
             ignored. Default: 100 (keep all).
         filter_empty_gt (bool): Whether to filter images without GT boxes.
             Default: True.
-        img_ext (str): Image file extension. Default: '.jpg'.
+        img_ext (str): Image file extension. Default: '.tif'.
     """
 
-    # # DIOR-R 20 object categories
-    # CLASSES = (
-    #         "两栖攻击舰", "侦察机", "加油机", "反潜巡逻机", "商业客机",
-    #         "坦克", "导弹快艇", "巡洋舰", "扫雷艇", "护卫舰",
-    #         "机场", "武装直升机", "民用客轮", "登陆舰", "空天战斗机",
-    #         "航空母舰", "补给舰", "装甲运输车", "轰炸机", "运输机",
-    #         "通用直升机", "重型运输车", "隐身战斗机", "预警机", "驱逐舰"
-    # )
-
-    # PALETTE = [
-    #     (165, 42, 42), (189, 183, 107), (0, 255, 0), (255, 0, 0),(138, 43, 226), 
-    #     (255, 128, 0), (255, 0, 255), (0, 255, 255),(255, 193, 193), (0, 51, 153),
-    #     (255, 250, 205), (0, 139, 139),(255, 255, 0), (147, 116, 116), (0, 0, 255),
-    #     (220, 20, 60),(128, 128, 0), (255, 215, 0), (128, 128, 128), (64, 224, 208),
-    #     (0, 0, 128), (255, 105, 180), (128, 0, 128), (0, 128, 128), (255, 165, 0),
-    # ]
-
+    # 25 remote sensing object categories (Chinese names)
     CLASSES = (
-        'airplane', 'airport', 'baseballfield', 'basketballcourt', 'bridge',
-        'chimney', 'dam', 'Expressway-Service-area',
-        'Expressway-toll-station', 'golffield', 'groundtrackfield', 'harbor',
-        'overpass', 'ship', 'stadium', 'storagetank', 'tenniscourt',
-        'trainstation', 'vehicle', 'windmill',
+        "两栖攻击舰", "侦察机", "加油机", "反潜巡逻机", "商业客机",
+        "坦克", "导弹快艇", "巡洋舰", "扫雷艇", "护卫舰",
+        "机场", "武装直升机", "民用客轮", "登陆舰", "空天战斗机",
+        "航空母舰", "补给舰", "装甲运输车", "轰炸机", "运输机",
+        "通用直升机", "重型运输车", "隐身战斗机", "预警机", "驱逐舰",
     )
 
     PALETTE = [
@@ -70,14 +56,20 @@ class DIORDataset(DOTADataset):
         (255, 193, 193), (0, 51, 153), (255, 250, 205), (0, 139, 139),
         (255, 255, 0), (147, 116, 116), (0, 0, 255), (220, 20, 60),
         (128, 128, 0), (255, 215, 0), (128, 128, 128), (64, 224, 208),
+        (0, 0, 128), (255, 105, 180), (128, 0, 128), (0, 128, 128),
+        (255, 165, 0),
     ]
+
+    SUPPORTED_EXTENSIONS = ('.tif', '.jpg', '.jpeg', '.png', '.bmp')
+    DEFAULT_IOU_THRS = [0.5, 0.75, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+
     def __init__(self,
                  ann_file,
                  pipeline,
                  version='le90',
                  difficulty=100,
                  filter_empty_gt=True,
-                 img_ext='.jpg',
+                 img_ext='.tif',
                  **kwargs):
         self.img_ext = img_ext
         super().__init__(
@@ -89,12 +81,22 @@ class DIORDataset(DOTADataset):
             **kwargs,
         )
 
+    def _build_image_map(self):
+        img_map = {}
+        if not self.img_prefix or not osp.isdir(self.img_prefix):
+            return img_map
+        for fname in os.listdir(self.img_prefix):
+            stem, ext = osp.splitext(fname)
+            if ext.lower() in self.SUPPORTED_EXTENSIONS:
+                img_map[stem] = fname
+        return img_map
+
     def load_annotations(self, ann_folder):
         """Load annotations from DOTA-format txt files.
 
         Overrides DOTADataset.load_annotations to:
-        1. Support custom image extensions (DIOR uses .jpg).
-        2. Use DIOR-R 20-class mapping.
+        1. Support mixed image extensions (.tif/.jpg/.png/.bmp).
+        2. Use Star 25-class mapping.
 
         Args:
             ann_folder (str): Folder containing DOTA format .txt files.
@@ -107,13 +109,14 @@ class DIORDataset(DOTADataset):
         data_infos = []
 
         if not ann_files:
-            # Test phase: find all images in img_prefix
             return []
+
+        img_map = self._build_image_map()
 
         for ann_file in ann_files:
             data_info = {}
             img_id = osp.splitext(osp.basename(ann_file))[0]
-            img_name = img_id + self.img_ext
+            img_name = img_map.get(img_id, img_id + self.img_ext)
             data_info['filename'] = img_name
             data_info['ann'] = {}
 
@@ -160,13 +163,19 @@ class DIORDataset(DOTADataset):
                         gt_polygons.append(poly)
 
             if gt_bboxes:
-                data_info['ann']['bboxes'] = np.array(gt_bboxes, dtype=np.float32)
-                data_info['ann']['labels'] = np.array(gt_labels, dtype=np.int64)
-                data_info['ann']['polygons'] = np.array(gt_polygons, dtype=np.float32)
+                data_info['ann']['bboxes'] = np.array(
+                    gt_bboxes, dtype=np.float32)
+                data_info['ann']['labels'] = np.array(
+                    gt_labels, dtype=np.int64)
+                data_info['ann']['polygons'] = np.array(
+                    gt_polygons, dtype=np.float32)
             else:
-                data_info['ann']['bboxes'] = np.zeros((0, 5), dtype=np.float32)
-                data_info['ann']['labels'] = np.array([], dtype=np.int64)
-                data_info['ann']['polygons'] = np.zeros((0, 8), dtype=np.float32)
+                data_info['ann']['bboxes'] = np.zeros(
+                    (0, 5), dtype=np.float32)
+                data_info['ann']['labels'] = np.array(
+                    [], dtype=np.int64)
+                data_info['ann']['polygons'] = np.zeros(
+                    (0, 8), dtype=np.float32)
 
             if gt_bboxes_ignore:
                 data_info['ann']['bboxes_ignore'] = np.array(

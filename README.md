@@ -1,6 +1,9 @@
-# Oriented R-CNN + DINOv3 Backbone for DIOR-R Fine-tuning
+# Oriented R-CNN + DINOv3 Backbone for Remote Sensing OBB Detection
 
-基于 [MMRotate](https://github.com/open-mmlab/mmrotate) 框架，使用 **DINOv3** (Meta AI) 作为骨干网络，**Oriented R-CNN** 作为检测头，对 **DIOR-R** 遥感图像数据集进行旋转目标检测微调。
+基于 [MMRotate](https://github.com/open-mmlab/mmrotate) 框架，使用 **DINOv3** (Meta AI) 作为骨干网络，**Oriented R-CNN** 作为检测头，支持多个遥感图像旋转目标检测数据集：
+
+- **DIOR-R** (20 类)
+- **Star-1021+Extend3** (25 类)
 
 ## 模型架构
 
@@ -13,7 +16,7 @@
 | Backbone | ViT-Base DINOv3 | patch=16, embed=768, depth=12, frozen_stages=8, img_size=1024 |
 | Neck | SimpleFPN | 从同分辨率 ViT 特征构建 stride [8,16,32,64] 金字塔 |
 | RPN | OrientedRPNHead | 旋转锚点生成 + 中点偏移编码 |
-| RoI Head | OrientedStandardRoIHead | RotatedRoIAlign + 旋转框回归 (20类) |
+| RoI Head | OrientedStandardRoIHead | RotatedRoIAlign + 旋转框回归 (20/25类) |
 
 ## 环境要求
 
@@ -23,7 +26,7 @@
 - timm >= 1.0
 
 ```bash
-source /home/guantp/pro/olmoearth_pretrain/.venv/bin/activate
+conda activate mmdet
 ```
 
 > **PyTorch 2.7 兼容性说明**：`tools/train.py` 内置了两个 monkey-patch 以适配 PyTorch 2.7+：
@@ -37,20 +40,32 @@ source /home/guantp/pro/olmoearth_pretrain/.venv/bin/activate
 ```
 mm_dino/
 ├── configs/oriented_rcnn/
-│   └── oriented_rcnn_dinov3_fpn_dior.py   # 训练配置
+│   ├── oriented_rcnn_dinov3_fpn_dior.py   # DIOR-R 训练配置
+│   └── oriented_rcnn_dinov3_fpn_star.py   # Star-1021+Extend3 训练配置
 ├── models/
 │   ├── backbones/vit_dinov3.py            # DINOv3 ViT 骨干网络
+│   ├── datasets/
+│   │   ├── dior.py                        # DIOR-R 数据集类
+│   │   └── star.py                        # Star-1021+Extend3 数据集类
 │   └── necks/simple_fpn.py                # 多尺度特征金字塔
 ├── tools/
 │   ├── train.py                           # 训练脚本 (含 PyTorch 2.7 兼容补丁)
 │   ├── test.py                            # 评估脚本
-│   ├── dist_train.sh                      # 分布式训练
+│   ├── dist_train.sh                      # 分布式训练 (DIOR-R)
+│   ├── dist_train_star.sh                 # 分布式训练 (Star-1021+Extend3)
 │   └── dist_test.sh                       # 分布式测试
-├── data/prepare_dior.py                   # 数据集准备
-└── docs/oriented_rcnn_dinov3_dior.md      # 详细文档
+├── data/
+│   ├── prepare_dior.py                    # DIOR-R 数据集准备
+│   └── prepare_star.py                    # Star-1021+Extend3 数据集准备 (YOLO→DOTA)
+└── docs/
+    ├── oriented_rcnn_dinov3_dior.md       # DIOR-R 详细文档
+    ├── oriented_rcnn_dinov3_star.md       # Star-1021+Extend3 详细文档
+    └── dinov3_local_checkpoint.md         # 本地 checkpoint 加载说明
 ```
 
 ## 快速开始
+
+### DIOR-R 数据集
 
 ### 1. 准备数据集
 
@@ -75,14 +90,29 @@ data/DIOR-R/
 └── ImageSets/           # train/val/test 划分
 ```
 
+### Star-1021+Extend3 数据集
+
+Star-1021+Extend3 标注为 YOLO OBB 格式，需先转为 DOTA 格式。本地数据目录通过 symlink 映射原始数据集 (`/mnt/ht2-nas2/00-model/Datasets/star-1021_1016+extend3/`)：
+
+```bash
+python data/prepare_star.py \
+    --data_root data/star-1021_1016+extend3
+```
+
+
+
 ### 2. 训练
 
 ```bash
-# 方式一：直接运行 dist_train.sh（使用 4,5,6,7 号 GPU，4 卡）
+# DIOR-R — 多 GPU 分布式训练（使用 4,5,6,7 号 GPU）
 bash tools/dist_train.sh
 
-# 方式二：单 GPU 训练
+# Star-1021+Extend3 — 多 GPU 分布式训练（使用 4,5,6,7 号 GPU）
+bash tools/dist_train_star.sh
+
+# 单 GPU 训练
 python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py
 
 # 从检查点恢复
 python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
@@ -118,6 +148,14 @@ python tools/train.py ... --cfg-options data.samples_per_gpu=4 data.workers_per_
 | chimney | dam | Expressway-Service-area | Expressway-toll-station | golffield |
 | groundtrackfield | harbor | overpass | ship | stadium |
 | storagetank | tenniscourt | trainstation | vehicle | windmill |
+
+## Star-1021+Extend3 数据集 (25 类)
+
+| 两栖攻击舰 | 侦察机 | 加油机 | 反潜巡逻机 | 商业客机 |
+| 坦克 | 导弹快艇 | 巡洋舰 | 扫雷艇 | 护卫舰 |
+| 机场 | 武装直升机 | 民用客轮 | 登陆舰 | 空天战斗机 |
+| 航空母舰 | 补给舰 | 装甲运输车 | 轰炸机 | 运输机 |
+| 通用直升机 | 重型运输车 | 隐身战斗机 | 预警机 | 驱逐舰 |
 
 ## DINOv3 模型变体
 
