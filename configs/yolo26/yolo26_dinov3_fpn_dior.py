@@ -28,7 +28,7 @@ _base_ = []
 # Custom imports for DINOv3 backbone, SimpleFPN, and YOLO26 head
 custom_imports = dict(
     imports=[
-        'models.backbones.vit_dinov3',
+        'models.backbones.dinov3_wrapper',
         'models.necks.simple_fpn',
         'models.necks.vitdet_fpn',
         'models.datasets.dior',
@@ -47,16 +47,16 @@ model = dict(
     # Extract features from blocks [3, 5, 7, 11] for multi-scale representation
     # Freeze first 8 transformer blocks to preserve pretrained features
     backbone=dict(
-        type='ViTDinoV3',
-        model_name='vit_base_patch16_dinov3',
-        pretrained=True,  # Auto-download weights via timm from HuggingFace hub
-        out_indices=(3, 5, 7, 11),
-        out_channels=256,
-        frozen_stages=8,
-        with_cp=False,
-        norm_cfg=dict(type='LN', eps=1e-6),
-        img_size=1024,
-        init_cfg=None,
+        type='DinoVisionTransformerBackbone',
+        model_name='dinov3_vitb16',
+        pretrained=False,
+        layers_to_use=[3, 5, 8, 11],
+        out_indices=(0, 1, 2, 3),
+        use_layernorm=True,
+        frozen_stages=0,
+        init_cfg=dict(
+            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
+        ),
     ),
 
     # -------------------------- Neck: ViTDetFPN --------------------------
@@ -133,8 +133,8 @@ model = dict(
         # Epoch: 12-30   → o2o_weight: 0 → 1.0 (ramp up)
         # Epoch: 30-36   → o2o_weight = 1.0 (O2M + O2O)
         progressive_loss=dict(
-            start_epoch=12,
-            end_epoch=30,
+            start_epoch=60,
+            end_epoch=150,
         ),
     ),
 
@@ -216,7 +216,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=2,
+    samples_per_gpu=16,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
@@ -243,10 +243,11 @@ data = dict(
 
 # ========================== Evaluation Configuration ==========================
 evaluation = dict(
-    interval=6,  # Evaluate every N epochs
+    interval=3,  # Evaluate every N epochs
     metric='mAP',
     save_best='auto',
     rule='greater',
+    gpu_collect=True,
 )
 
 # ========================== Optimization Configuration ==========================
@@ -272,19 +273,19 @@ optimizer_config = dict(
 lr_config = dict(
     policy='CosineAnnealing',
     warmup='linear',
-    warmup_iters=1000,  # Longer warmup for YOLO-style head
+    warmup_iters=500,  # Longer warmup for YOLO-style head
     warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3,
 )
 
-runner = dict(type='EpochBasedRunner', max_epochs=36)
+runner = dict(type='EpochBasedRunner', max_epochs=200)
 
 # ========================== Runtime Configuration ==========================
-checkpoint_config = dict(interval=6, max_keep_ckpts=3)
+checkpoint_config = dict(interval=5, max_keep_ckpts=3)
 
 # Logging
 log_config = dict(
-    interval=50,
+    interval=10,
     hooks=[
         dict(type='TextLoggerHook'),
     ],
@@ -306,18 +307,18 @@ gpu_ids = range(1)
 
 # OpenCV config
 opencv_num_threads = 0
-mp_start_method = 'fork'
+mp_start_method = 'spawn'
 
 # Auto-scale learning rate based on batch size
-auto_scale_lr = dict(base_batch_size=16)
+# auto_scale_lr = dict(base_batch_size=16)
 
 # ========================== Custom Hooks ==========================
 # Progressive loss hook: shifts supervision from O2M to O2O
 custom_hooks = [
     dict(
         type='ProgressiveLossHook',
-        start_epoch=12,
-        end_epoch=30,
+        start_epoch=60,
+        end_epoch=150,
         priority='LOW',
     ),
 ]
