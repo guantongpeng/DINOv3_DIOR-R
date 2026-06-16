@@ -1,0 +1,232 @@
+"""RVSA Detection Head for Rotated Object Detection.
+
+End-to-end rotated object detection head using VSA Transformer.
+Outputs rotated bounding boxes (cx, cy, w, h, theta) via Hungarian matching.
+"""
+
+import copy
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from mmcv.cnn import Linear, bias_init_with_prob, constant_init
+from mmcv.runner import force_fp32
+
+from mmdet.core import multi_apply, reduce_mean
+from mmdet.models.builder import HEADS
+from mmdet.models.utils.transformer import inverse_sigmoid
+from mmdet.models.dense_heads.detr_head import DETRHead
+
+
+@HEADS.register_module()
+class RVSAHead(DETRHead):
+
+    def __init__(self,
+                 num_classes,
+                 in_channels,
+                 num_query=300,
+                 num_reg_fcs=2,
+                 transformer=None,
+                 sync_cls_avg_factor=False,
+                 positional_encoding=dict(
+                     type='SinePositionalEncoding',
+                     num_feats=128,
+                     normalize=True),
+                 loss_cls=dict(
+                     type='FocalLoss',
+                     use_sigmoid=True,
+                     gamma=2.0,
+                     alpha=0.25,
+                     loss_weight=2.0),
+                 loss_bbox=dict(type='L1Loss', loss_weight=5.0),
+                 loss_iou=dict(type='GIoULoss', loss_weight=2.0),
+                 train_cfg=dict(
+                     assigner=dict(
+                         type='HungarianAssigner',
+                         cls_cost=dict(type='FocalLossCost', weight=2.0),
+                         reg_cost=dict(type='BBoxL1Cost', weight=5.0),
+                         iou_cost=dict(type='IoUCost', iou_mode='giou', weight=2.0))),
+                 test_cfg=dict(max_per_img=300),
+                 init_cfg=None,
+                 **kwargs):
+        super().__init__(
+            num_classes=num_classes,
+            in_channels=in_channels,
+            num_query=num_query,
+            num_reg_fcs=num_reg_fcs,
+            transformer=transformer,
+            sync_cls_avg_factor=sync_cls_avg_factor,
+            positional_encoding=positional_encoding,
+            loss_cls=loss_cls,
+            loss_bbox=loss_bbox,
+            loss_iou=loss_iou,
+            train_cfg=train_cfg,
+            test_cfg=test_cfg,
+            init_cfg=init_cfg,
+            **kwargs,
+        )
+
+    def _init_layers(self):
+        fc_cls = Linear(self.embed_dims, self.cls_out_channels)
+
+        reg_branch = []
+        for _ in range(self.num_reg_fcs):
+            reg_branch.append(Linear(self.embed_dims, self.embed_dims))
+            reg_branch.append(nn.ReLU())
+        reg_branch.append(Linear(self.embed_dims, 5))
+        reg_branch = nn.Sequential(*reg_branch)
+
+        def _get_clones(module, N):
+            return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
+
+        num_pred = (self.transformer.decoder.num_layers
+                    if hasattr(self.transformer, 'decoder') else 6)
+        self.cls_branches = _get_clones(fc_cls, num_pred)
+        self.reg_branches = _get_clones(reg_branch, num_pred)
+        self.query_embedding = nn.Embedding(self.num_query, self.embed_dims * 2)
+
+    def init_weights(self):
+        self.transformer.init_weights()
+        if self.loss_cls.use_sigmoid:
+            bias_init = bias_init_with_prob(0.01)
+            for m in self.cls_branches:
+                nn.init.constant_(m.bias, bias_init)
+        for m in self.reg_branches:
+            constant_init(m[-1], 0, bias=0)
+        nn.init.constant_(self.reg_branches[0][-1].bias.data[2:4], 0.0)
+
+    def forward(self, mlvl_feats, img_metas):
+        batch_size = mlvl_feats[0].size(0)
+        input_img_h, input_img_w = img_metas[0]['batch_input_shape']
+        img_masks = mlvl_feats[0].new_ones((batch_size, input_img_h, input_img_w))
+        for img_id in range(batch_size):
+            img_h, img_w = img_metas[img_id]['img_shape'][:2]
+            img_masks[img_id, :img_h, :img_w] = 0
+
+        mlvl_masks = []
+        mlvl_pos_embeds = []
+        for feat in mlvl_feats:
+            mlvl_masks.append(
+                F.interpolate(img_masks[None], size=feat.shape[-2:]).to(torch.bool).squeeze(0))
+            mlvl_pos_embeds.append(self.positional_encoding(mlvl_masks[-1]))
+
+        query_embeds = self.query_embedding.weight
+        hs, init_reference, inter_references, _, _ = self.transformer(
+            mlvl_feats, mlvl_masks, query_embeds, mlvl_pos_embeds,
+            reg_branches=None, cls_branches=None)
+
+        hs = hs.permute(0, 2, 1, 3)
+        outputs_classes = []
+        outputs_coords = []
+
+        for lvl in range(hs.shape[0]):
+            if lvl == 0:
+                reference = init_reference
+            else:
+                reference = inter_references[lvl - 1]
+            reference = inverse_sigmoid(reference)
+            outputs_class = self.cls_branches[lvl](hs[lvl])
+            tmp = self.reg_branches[lvl](hs[lvl])
+            tmp[..., :2] += reference
+            outputs_coord = tmp.sigmoid()
+            outputs_classes.append(outputs_class)
+            outputs_coords.append(outputs_coord)
+
+        return (torch.stack(outputs_classes), torch.stack(outputs_coords), None, None)
+
+    @force_fp32(apply_to=('all_cls_scores', 'all_bbox_preds'))
+    def loss(self, all_cls_scores, all_bbox_preds, enc_cls_scores, enc_bbox_preds,
+             gt_bboxes_list, gt_labels_list, img_metas, gt_bboxes_ignore=None):
+        assert gt_bboxes_ignore is None
+        num_dec_layers = len(all_cls_scores)
+        all_gt_bboxes_list = [gt_bboxes_list for _ in range(num_dec_layers)]
+        all_gt_labels_list = [gt_labels_list for _ in range(num_dec_layers)]
+        img_metas_list = [img_metas for _ in range(num_dec_layers)]
+
+        losses_cls, losses_bbox, losses_iou = multi_apply(
+            self.loss_single, all_cls_scores, all_bbox_preds,
+            all_gt_bboxes_list, all_gt_labels_list, img_metas_list)
+
+        loss_dict = dict()
+        loss_dict['loss_cls'] = losses_cls[-1]
+        loss_dict['loss_bbox'] = losses_bbox[-1]
+        loss_dict['loss_iou'] = losses_iou[-1]
+        for i, (lc, lb, li) in enumerate(zip(losses_cls[:-1], losses_bbox[:-1], losses_iou[:-1])):
+            loss_dict[f'd{i}.loss_cls'] = lc
+            loss_dict[f'd{i}.loss_bbox'] = lb
+            loss_dict[f'd{i}.loss_iou'] = li
+        return loss_dict
+
+    def _get_target_single(self, cls_score, bbox_pred, gt_bboxes, gt_labels,
+                           img_meta, gt_bboxes_ignore=None):
+        num_bboxes = bbox_pred.size(0)
+        assign_result = self.assigner.assign(
+            bbox_pred, cls_score, gt_bboxes, gt_labels, img_meta, gt_bboxes_ignore)
+        sampling_result = self.sampler.sample(assign_result, bbox_pred, gt_bboxes)
+        pos_inds = sampling_result.pos_inds
+        neg_inds = sampling_result.neg_inds
+
+        labels = gt_bboxes.new_full((num_bboxes,), self.num_classes, dtype=torch.long)
+        labels[pos_inds] = gt_labels[sampling_result.pos_assigned_gt_inds]
+        label_weights = gt_bboxes.new_ones(num_bboxes)
+
+        bbox_targets = torch.zeros_like(bbox_pred)
+        bbox_weights = torch.zeros_like(bbox_pred)
+        bbox_weights[pos_inds] = 1.0
+        img_h, img_w = img_meta['img_shape'][:2]
+
+        factor = bbox_pred.new_tensor([img_w, img_h, img_w, img_h, 1.0]).unsqueeze(0)
+        pos_gt_bboxes = sampling_result.pos_gt_bboxes
+        if pos_gt_bboxes.size(-1) == 4:
+            pos_gt_bboxes_pad = torch.zeros(len(pos_gt_bboxes), 5, device=pos_gt_bboxes.device)
+            pos_gt_bboxes_pad[:, :4] = pos_gt_bboxes
+            pos_gt_bboxes = pos_gt_bboxes_pad
+        pos_gt_bboxes_norm = pos_gt_bboxes / factor
+        bbox_targets[pos_inds] = pos_gt_bboxes_norm
+        return (labels, label_weights, bbox_targets, bbox_weights, pos_inds, neg_inds)
+
+    @force_fp32(apply_to=('all_cls_scores', 'all_bbox_preds'))
+    def get_bboxes(self, all_cls_scores, all_bbox_preds, enc_cls_scores, enc_bbox_preds,
+                   img_metas, rescale=False):
+        cls_scores = all_cls_scores[-1]
+        bbox_preds = all_bbox_preds[-1]
+        result_list = []
+        for img_id in range(len(img_metas)):
+            cls_score = cls_scores[img_id]
+            bbox_pred = bbox_preds[img_id]
+            img_shape = img_metas[img_id]['img_shape']
+            scale_factor = img_metas[img_id]['scale_factor']
+            proposals = self._get_bboxes_single(cls_score, bbox_pred,
+                                                img_shape, scale_factor, rescale)
+            result_list.append(proposals)
+        return result_list
+
+    def _get_bboxes_single(self, cls_score, bbox_pred, img_shape, scale_factor, rescale=False):
+        max_per_img = self.test_cfg.get('max_per_img', self.num_query)
+        if self.loss_cls.use_sigmoid:
+            cls_score = cls_score.sigmoid()
+            scores, indexes = cls_score.view(-1).topk(max_per_img)
+            det_labels = indexes % self.num_classes
+            bbox_index = indexes // self.num_classes
+            bbox_pred = bbox_pred[bbox_index]
+        else:
+            scores, det_labels = F.softmax(cls_score, dim=-1)[..., :-1].max(-1)
+            scores, bbox_index = scores.topk(max_per_img)
+            bbox_pred = bbox_pred[bbox_index]
+            det_labels = det_labels[bbox_index]
+
+        det_bboxes = bbox_pred.clone()
+        det_bboxes[:, 0] = det_bboxes[:, 0] * img_shape[1]
+        det_bboxes[:, 1] = det_bboxes[:, 1] * img_shape[0]
+        det_bboxes[:, 2] = det_bboxes[:, 2] * img_shape[1]
+        det_bboxes[:, 3] = det_bboxes[:, 3] * img_shape[0]
+        det_bboxes[:, 0].clamp_(min=0, max=img_shape[1])
+        det_bboxes[:, 1].clamp_(min=0, max=img_shape[0])
+        det_bboxes[:, 2].clamp_(min=1, max=img_shape[1] * 2)
+        det_bboxes[:, 3].clamp_(min=1, max=img_shape[0] * 2)
+        det_bboxes[:, 4].clamp_(min=-1.57, max=1.57)
+        if rescale:
+            det_bboxes[:, :4] /= det_bboxes[:, :4].new_tensor(
+                [scale_factor[0], scale_factor[1], scale_factor[0], scale_factor[1]])
+        det_bboxes = torch.cat((det_bboxes, scores.unsqueeze(1)), -1)
+        return det_bboxes, det_labels

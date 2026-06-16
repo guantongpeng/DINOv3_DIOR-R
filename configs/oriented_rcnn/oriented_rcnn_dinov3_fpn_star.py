@@ -303,6 +303,7 @@ evaluation = dict(
     #   'mAP_multi' - mAP@0.50 + mAP@0.75
     save_best='mAP@50:95',
     rule='greater',
+    gpu_collect=True,  # Use GPU all_gather instead of file-based collect (avoids NFS race conditions)
 )
 
 # ========================== Optimization Configuration ==========================

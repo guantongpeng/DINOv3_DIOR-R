@@ -8,15 +8,18 @@
 ## 模型架构
 
 ```
-输入 (800×800) → ViT-Base DINOv3 (1024px) → SimpleFPN → Oriented RPN → Oriented RoI Head → 旋转检测框
+输入 (1024×1024) → ViT-Base DINOv3 → ViTDetFPN → Oriented RPN → Oriented RoI Head → 旋转检测框
 ```
 
 | 组件 | 配置 | 说明 |
 |------|------|------|
-| Backbone | ViT-Base DINOv3 | patch=16, embed=768, depth=12, frozen_stages=8, img_size=1024 |
-| Neck | SimpleFPN | 从同分辨率 ViT 特征构建 stride [8,16,32,64] 金字塔 |
+| Backbone | ViT-Base DINOv3 | patch=16, embed=768, depth=12, img_size=1024, drop_path=0.1 |
+| Neck | **ViTDetFPN** | 渐进式上采样 + top-down 融合 + SE 注意力, 输出 stride [4,8,16,32] |
 | RPN | OrientedRPNHead | 旋转锚点生成 + 中点偏移编码 |
 | RoI Head | OrientedStandardRoIHead | RotatedRoIAlign + 旋转框回归 (20/25类) |
+
+> **2025-06-12 架构升级**: SimpleFPN → ViTDetFPN, 修复 DINOv3 checkpoint 权重加载(162/162 key 匹配),
+> 输入分辨率 800→1024, 新增多尺度训练和 photometric 数据增强。
 
 ## 环境要求
 
@@ -47,7 +50,9 @@ mm_dino/
 │   ├── datasets/
 │   │   ├── dior.py                        # DIOR-R 数据集类
 │   │   └── star.py                        # Star-1021+Extend3 数据集类
-│   └── necks/simple_fpn.py                # 多尺度特征金字塔
+│   └── necks/
+│       ├── simple_fpn.py                # SimpleFPN (旧版 neck)
+│       └── vitdet_fpn.py                # ViTDetFPN (新版 neck, 推荐)
 ├── tools/
 │   ├── train.py                           # 训练脚本 (含 PyTorch 2.7 兼容补丁)
 │   ├── test.py                            # 评估脚本
@@ -172,14 +177,17 @@ python tools/train.py ... --cfg-options data.samples_per_gpu=4 data.workers_per_
 
 | 配置 | 值 | 说明 |
 |------|-----|------|
-| 优化器 | AdamW (lr=1e-4, weight_decay=0.05) | backbone lr_mult=0.1 |
+| 优化器 | AdamW (lr=1e-4, weight_decay=0.05) | 全参数统一学习率 |
 | 学习率调度 | CosineAnnealing + 500 iter warmup | min_lr_ratio=1e-3 |
-| 层级衰减 | backbone lr_mult=0.1 | 冻结前 8 层 |
-| 批次大小 | 16/GPU × 4 GPU = 64 | workers_per_gpu=4 |
-| 训练轮数 | 100 | evaluation interval=6 |
+| 批次大小 | 4/GPU × 4 GPU = 16 | workers_per_gpu=4 |
+| 训练轮数 | 36 | evaluation interval=3 |
+| 输入分辨率 | 1024×1024 (多尺度训练 800-1200) | ViT 特征 64×64 |
+| 数据增强 | RandomFlip + PhotoMetricDistortion | 多尺度 + 色彩抖动 |
+| 测试增强 | 多尺度 [800, 1024] | |
 | 混合精度 | fp16 (loss_scale=512) | |
 | 梯度裁剪 | max_norm=35 | |
-| 多进程方式 | spawn | 必须用 spawn（CUDA 不支持 fork） |
+| DropPath | 0.1 | backbone 正则化 |
+| 多进程方式 | spawn | CUDA 不支持 fork |
 
 ## 参考
 

@@ -16,7 +16,7 @@ from collections import defaultdict
 def load_log_data(filepath):
     """Read JSON lines file, extract train and validation records."""
     train_records = []      # list of (step, dict_of_metrics)
-    val_records = []        # list of (epoch, mAP)
+    val_records = []        # list of (epoch, dict_of_map_metrics)
 
     step = 0
     with open(filepath, 'r') as f:
@@ -29,20 +29,20 @@ def load_log_data(filepath):
             except json.JSONDecodeError:
                 continue
 
-            # Skip records without 'mode' field (e.g., first config block)
             if 'mode' not in record:
                 continue
 
             mode = record['mode']
             if mode == 'train':
-                # Collect all loss values (keys starting with 'loss') and 'acc'
                 metrics = {k: v for k, v in record.items() if k.startswith('loss') or k == 'acc'}
                 if metrics:
                     train_records.append((step, metrics))
                     step += 1
             elif mode == 'val':
-                if 'mAP' in record and 'epoch' in record:
-                    val_records.append((record['epoch'], record['mAP']))
+                if 'epoch' in record:
+                    map_metrics = {k: v for k, v in record.items() if k.startswith('mAP')}
+                    if map_metrics:
+                        val_records.append((record['epoch'], map_metrics))
 
     return train_records, val_records
 
@@ -105,20 +105,42 @@ def plot_loss_curves(train_records, output_file="loss_curves.png"):
     print(f"Loss & accuracy curves saved to {output_file}")
 
 
-def plot_val_map(val_records, output_file="val_map.png"):
-    """Plot mAP vs epoch."""
+DEFAULT_MAP_KEYS = ['mAP', 'mAP@0.50', 'mAP@0.75', 'mAP@50:95']
+
+
+def plot_val_map(val_records, output_file="val_map.png", map_keys=None):
+    """Plot selected mAP metrics vs epoch on the same figure."""
     if not val_records:
         print("No validation records found.")
         return
 
-    epochs, maps = zip(*sorted(val_records))   # sort by epoch
+    sorted_records = sorted(val_records, key=lambda x: x[0])
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, maps, marker='o', linewidth=1.5)
+    all_map_names = set()
+    for _, map_metrics in sorted_records:
+        all_map_names.update(map_metrics.keys())
+
+    if map_keys is None:
+        map_names = sorted(all_map_names)
+    else:
+        map_names = [k for k in map_keys if k in all_map_names]
+        if not map_names:
+            map_names = sorted(all_map_names)
+
+    epochs = [epoch for epoch, _ in sorted_records]
+    colors = plt.cm.tab10.colors
+
+    plt.figure(figsize=(10, 6))
+    for idx, name in enumerate(map_names):
+        values = [map_metrics.get(name) for _, map_metrics in sorted_records]
+        color = colors[idx % len(colors)]
+        plt.plot(epochs, values, marker='o', linewidth=1.5, color=color, label=name)
+
     plt.xlabel("Epoch")
     plt.ylabel("mAP")
     plt.title("Validation mAP over Epochs")
     plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend(loc='best')
     plt.tight_layout()
     plt.savefig(output_file, dpi=150)
     print(f"Validation mAP curve saved to {output_file}")
@@ -127,6 +149,8 @@ def plot_val_map(val_records, output_file="val_map.png"):
 def main():
     parser = argparse.ArgumentParser(description="Plot loss, acc, and mAP curves from JSON lines log.")
     parser.add_argument("log_file", help="Path to the JSON lines log file")
+    parser.add_argument("--map-keys", nargs="*", default=DEFAULT_MAP_KEYS,
+                        help="mAP metric keys to plot (default: %(default)s)")
     args = parser.parse_args()
 
     log_dir = os.path.dirname(os.path.abspath(args.log_file))
@@ -140,7 +164,7 @@ def main():
 
     if val_records:
         output = os.path.join(log_dir, "val_map.png")
-        plot_val_map(val_records, output_file=output)
+        plot_val_map(val_records, output_file=output, map_keys=args.map_keys)
     else:
         print("No validation data found, skipping mAP plot.")
 

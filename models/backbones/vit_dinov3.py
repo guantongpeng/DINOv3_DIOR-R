@@ -185,19 +185,93 @@ class ViTDinoV3(BaseModule):
         # Sorted unique output indices for efficient single-pass extraction
         self.sorted_out_indices = sorted(set(self.out_indices))
 
-        # Create output projection layers (1x1 conv + GroupNorm)
-        # Use GroupNorm instead of LayerNorm since features are in NCHW format
+        # Create output projection layers (1x1 conv + GroupNorm + GELU)
+        # ViT features are in LayerNorm space; GroupNorm + GELU adapts them
+        # for the detection neck which uses GroupNorm-based convolutions.
         self.output_projections = nn.ModuleList()
         for _ in range(len(self.out_indices)):
             proj = nn.Sequential(
                 nn.Conv2d(self.embed_dim, out_channels, kernel_size=1, bias=False),
                 nn.GroupNorm(num_groups=32, num_channels=out_channels),
+                nn.GELU(),
             )
             self.output_projections.append(proj)
 
         # Store strides (all ViT features are at stride=patch_size)
         self.feat_strides = [self.patch_size] * len(self.out_indices)
         self.num_features = tuple([out_channels] * len(self.out_indices))
+
+    @staticmethod
+    def _remap_dinov3_official_to_timm(state_dict, model_keys):
+        """Remap official DINOv3 checkpoint keys to timm model keys.
+
+        The official Meta DINOv3 checkpoint uses naming conventions that
+        differ from the timm ``vit_base_patch16_dinov3`` model:
+
+        ===========================  ===========================
+        Official checkpoint key      timm model key
+        ===========================  ===========================
+        storage_tokens               reg_token
+        blocks.X.ls1.gamma           blocks.X.gamma_1
+        blocks.X.ls2.gamma           blocks.X.gamma_2
+        blocks.X.attn.qkv.weight     blocks.X.attn.qkv.weight  (same)
+        blocks.X.attn.qkv.bias       *SKIP* (timm uses bias-free fused qkv)
+        blocks.X.attn.qkv.bias_mask  *SKIP*
+        mask_token                   *SKIP*
+        rope_embed.periods           *SKIP*
+        ===========================  ===========================
+
+        Returns a new state dict with keys remapped to match timm's model.
+        """
+        logger = get_root_logger()
+        remapped = {}
+        remapped_count = 0
+        skipped_bias = 0
+
+        for ckpt_key, ckpt_val in state_dict.items():
+            # 1) storage_tokens -> reg_token
+            if ckpt_key == 'storage_tokens':
+                tgt_key = 'reg_token'
+            # 2) blocks.X.ls1.gamma -> blocks.X.gamma_1
+            elif ckpt_key.endswith('.ls1.gamma'):
+                prefix = ckpt_key[:-len('.ls1.gamma')]
+                tgt_key = prefix + '.gamma_1'
+            # 3) blocks.X.ls2.gamma -> blocks.X.gamma_2
+            elif ckpt_key.endswith('.ls2.gamma'):
+                prefix = ckpt_key[:-len('.ls2.gamma')]
+                tgt_key = prefix + '.gamma_2'
+            # 4) qkv bias / bias_mask — timm's fused qkv has no separate bias
+            elif ckpt_key.endswith('.attn.qkv.bias') or ckpt_key.endswith('.attn.qkv.bias_mask'):
+                skipped_bias += 1
+                continue
+            # 5) mask_token and rope_embed.periods — not used by timm model
+            elif ckpt_key in ('mask_token', 'rope_embed.periods'):
+                continue
+            else:
+                tgt_key = ckpt_key
+
+            if tgt_key in model_keys:
+                if ckpt_val.shape == model_keys[tgt_key].shape:
+                    remapped[tgt_key] = ckpt_val
+                    if tgt_key != ckpt_key:
+                        remapped_count += 1
+                else:
+                    logger.warning(
+                        f'Shape mismatch for "{ckpt_key}" -> "{tgt_key}": '
+                        f'checkpoint {ckpt_val.shape} vs model {model_keys[tgt_key].shape}. '
+                        f'Skipping.'
+                    )
+            else:
+                logger.debug(f'No target found for checkpoint key: {ckpt_key}')
+
+        if remapped_count:
+            logger.info(f'Remapped {remapped_count} checkpoint keys to timm naming convention.')
+        if skipped_bias:
+            logger.info(
+                f'Skipped {skipped_bias} qkv bias/bias_mask keys '
+                f'(timm uses bias-free fused qkv).'
+            )
+        return remapped
 
     def _load_local_checkpoint(self, checkpoint_path: str):
         """Load pretrained weights from a local .pth checkpoint file.
@@ -207,8 +281,9 @@ class ViTDinoV3(BaseModule):
             - Raw state dict (keys map directly to timm model)
             - Meta official DINOv3 checkpoint (may have ``'teacher'`` key)
 
-        The loader strips DDP ``module.`` prefix and logs any keys that are
-        missing or unexpected.
+        The loader strips DDP ``module.`` prefix and remaps official DINOv3
+        key names (e.g. ``ls1.gamma`` → ``gamma_1``) to match the timm model.
+        Logs any keys that are missing or unexpected.
 
         Args:
             checkpoint_path (str): Path to the local .pth file.
@@ -245,8 +320,11 @@ class ViTDinoV3(BaseModule):
             }
             logger.info('Stripped "module." prefix from checkpoint keys.')
 
-        # ---- Load into timm model ----
+        # ---- Remap official DINOv3 keys to timm naming convention ----
         model_state = self.vit.state_dict()
+        state_dict = self._remap_dinov3_official_to_timm(state_dict, model_state)
+
+        # ---- Load into timm model ----
         missing, unexpected = [], []
 
         for k, v in state_dict.items():
@@ -274,7 +352,7 @@ class ViTDinoV3(BaseModule):
         )
 
         if missing:
-            logger.debug(f'Missing keys: {missing}')
+            logger.warning(f'Missing keys (will be randomly initialized): {missing}')
         if unexpected:
             logger.debug(f'Unexpected keys: {unexpected}')
 

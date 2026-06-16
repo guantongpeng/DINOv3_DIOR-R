@@ -7,22 +7,24 @@
 ### 模型架构
 
 ```
-输入图像 (800×800)
+输入图像 (1024×1024)
     │
     ▼
 ┌─────────────────────────────┐
-│  ViT-Base DINOv3 Backbone   │  ← 预训练权重 (frozen_stages=8)
+│  ViT-Base DINOv3 Backbone   │  ← 预训练权重 (全参数微调)
 │  - patch_size=16            │
 │  - embed_dim=768            │
 │  - depth=12                 │
+│  - drop_path=0.1            │
 │  - 输出4层特征 (stride=16)   │
 └──────────┬──────────────────┘
-           │ 4× [B, 256, 50, 50]
+           │ 4× [B, 256, 64, 64]
            ▼
 ┌─────────────────────────────┐
-│  SimpleFPN Neck             │  ← 多尺度特征金字塔
-│  - stride 8, 16, 32, 64    │
-│  - 反卷积上采样 + 卷积下采样  │
+│  ViTDetFPN Neck             │  ← 强特征金字塔
+│  - stride 4, 8, 16, 32     │
+│  - 渐进式上采样 + top-down  │
+│  - SE 通道注意力            │
 └──────────┬──────────────────┘
            │
            ▼
@@ -62,7 +64,8 @@ mm_dino/
 │   │   └── star.py                            # Star-1021+Extend3 数据集类
 │   └── necks/
 │       ├── __init__.py
-│       └── simple_fpn.py                      # SimpleFPN 特征金字塔
+│       ├── simple_fpn.py                      # SimpleFPN (旧版 neck)
+│       └── vitdet_fpn.py                      # ViTDetFPN (新版 neck, 推荐)
 ├── tools/
 │   ├── train.py                               # 训练脚本
 │   ├── test.py                                # 评估脚本
@@ -212,26 +215,38 @@ DINOv3 是 Meta AI 提出的自监督视觉Transformer预训练模型。
 | embed_dim | 768 | Token嵌入维度 |
 | depth | 12 | Transformer块数量 |
 | num_heads | 12 | 注意力头数量 |
-| 预训练数据 | LVD-142M | 大规模网页数据 |
+| 预训练数据 | LVD-1689M | 大规模网页数据 |
+| drop_path | 0.1 | 随机深度正则化 |
 
 **输出配置**:
 - `out_indices = (3, 5, 7, 11)`: 从第3、5、7、11个Transformer块提取特征
 - `out_channels = 256`: 输出通道统一到256维
-- `frozen_stages = 8`: 冻结前8个Transformer块 (保留预训练知识)
 - `img_size = 1024`: 位置编码插值目标尺寸
+- **全参数微调**: 所有 ViT 参数参与训练（无冻结层）
 
-### SimpleFPN 特征金字塔
+**Checkpoint 加载**:
+官方 DINOv3 checkpoint key 自动映射后应显示 `162/162 keys matched, 0 missing`。
 
-由于ViT输出所有特征图具有相同的空间分辨率 (stride=16)，使用SimpleFPN创建多尺度金字塔。
+### ViTDetFPN 特征金字塔
+
+| 特性 | SimpleFPN (旧) | ViTDetFPN (新) |
+|------|---------------|---------------|
+| 输出 stride | [8, 16, 32, 64] | **[4, 8, 16, 32]** |
+| P0 分辨率 (1024²) | 128×128 | **256×256** (4×) |
+| 上采样 | 单层 ConvTranspose2d | bilinear + 3×3 conv |
+| 跨尺度融合 | 可选 | 强制 top-down + SE 注意力 |
 
 **处理流程**:
 ```
-输入: 4个特征图 @ stride 16 (50×50)
-    │
-    ├─→ Level 0: 反卷积上采样 → stride 8  (100×100)
-    ├─→ Level 1: 保留原分辨率 → stride 16 (50×50)
-    ├─→ Level 2: stride-2 卷积 → stride 32 (25×25)
-    └─→ Level 3: stride-2 卷积 → stride 64 (13×13)
+输入: 4个特征图 @ stride 16 (64×64)
+    │              │              │              │
+  lateral0     lateral1      lateral2      lateral3
+    │              │              │              │
+ upsample 4×  upsample 2×    pass-through   downsample
+    │              │              │              │
+ SE+fusion ← SE+fusion ← SE+fusion ← ────────
+    │              │              │              │
+  P0 (s4)      P1 (s8)       P2 (s16)      P3 (s32)
 ```
 
 ### Oriented R-CNN 检测头
@@ -252,14 +267,17 @@ Oriented R-CNN 是专为旋转目标检测设计的二阶段检测器。
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| 优化器 | AdamW | 带权重衰减 |
-| 学习率 | 1e-4 | 骨干网络使用0.1×倍率 |
-| 学习率策略 | CosineAnnealing | 余弦退火 |
-| Warmup | 150 iter | 线性预热 |
-| 批次大小 | 16/GPU | 800×800图像 |
-| 训练轮数 | 200 | - |
-| 混合精度 | fp16 | 加速训练 |
+| 优化器 | AdamW | lr=1e-4, weight_decay=0.05 |
+| 学习率 | 1e-4 | 全参数统一（无层级衰减） |
+| 学习率策略 | CosineAnnealing | 余弦退火, min_lr_ratio=1e-3 |
+| Warmup | 500 iter | 线性预热 |
+| 批次大小 | 4/GPU × 4 = 16 | 1024×1024 图像 |
+| 训练轮数 | 36 | 每 3 epoch 评估 |
+| 输入分辨率 | 1024×1024 | 多尺度训练 [800, 1024, 1200] |
+| 数据增强 | RandomFlip + PhotoMetricDistortion | 多尺度 + 色彩抖动 |
+| 混合精度 | fp16 (loss_scale=512) | 加速训练 |
 | 梯度裁剪 | max_norm=35 | 稳定训练 |
+| DropPath | 0.1 | backbone 正则化 |
 
 ## 使用方法 | Usage
 

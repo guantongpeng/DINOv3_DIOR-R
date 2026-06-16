@@ -196,7 +196,9 @@ class DIORDataset(DOTADataset):
                  proposal_nums=(100, 300, 1000),
                  iou_thr=0.5,
                  scale_ranges=None,
-                 nproc=4):
+                 nproc=4,
+                 classwise=False,
+                 **kwargs):
         if not isinstance(metric, str):
             assert len(metric) == 1
             metric = metric[0]
@@ -208,11 +210,14 @@ class DIORDataset(DOTADataset):
         nproc = min(nproc, os.cpu_count())
 
         if metric == 'mAP':
-            mean_ap, _ = eval_rbbox_map(
+            mean_ap, cls_results = eval_rbbox_map(
                 results, annotations,
                 scale_ranges=scale_ranges, iou_thr=iou_thr,
                 dataset=self.CLASSES, logger=logger, nproc=nproc)
             eval_results[f'mAP@{iou_thr:.2f}'] = mean_ap
+            if classwise:
+                for i, cls_result in enumerate(cls_results):
+                    eval_results[f'{self.CLASSES[i]}'] = float(cls_result['ap'])
 
         elif metric == 'mAP_multi':
             for thr in [0.5, 0.75]:
@@ -233,11 +238,5 @@ class DIORDataset(DOTADataset):
                 aps.append(mean_ap)
                 eval_results[f'mAP@{thr:.2f}'] = mean_ap
             eval_results['mAP@50:95'] = float(np.mean(aps))
-
-        if logger is not None:
-            import mmcv
-            from mmcv.utils import print_log
-            for k, v in eval_results.items():
-                print_log(f'{k}: {v:.4f}', logger=logger)
 
         return eval_results

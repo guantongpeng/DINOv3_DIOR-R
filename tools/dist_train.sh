@@ -25,7 +25,7 @@ export MKL_NUM_THREADS=1
 export NO_ALBUMENTATIONS_UPDATE=1
 # Activate the correct conda environment
 # Using the full path to the mmdet environment's Python to avoid environment activation issues
-MMDET_PYTHON="/home/users_model/miniconda3/envs/mmdet/bin/python"
+# MMDET_PYTHON="/home/users_model/miniconda3/envs/mmdet/bin/python"
 
 # Check that the config file exists
 if [ ! -f "${CONFIG}" ]; then
@@ -33,12 +33,14 @@ if [ ! -f "${CONFIG}" ]; then
     exit 1
 fi
 
-CUDA_VISIBLE_DEVICES=2,4,5,6 ${MMDET_PYTHON} -m torch.distributed.run \
-    --nproc_per_node=4 \
-    --master_port=29504 \
+# CUDA_VISIBLE_DEVICES=0,1,2,3 ${MMDET_PYTHON} -m torch.distributed.run \
+CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python -m torch.distributed.run \
+    --nproc_per_node=6 \
+    --master_port=29502 \
     $(dirname "$0")/train.py \
     ${CONFIG} \
-    --launcher pytorch
+    --launcher pytorch 
+    # --resume-from /mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/oriented_rcnn_dinov3_fpn_dior_20260613_141503/latest.pth
 
 echo ""
 echo "Training completed!"

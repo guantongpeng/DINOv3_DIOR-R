@@ -1,24 +1,16 @@
 # =============================================================================
-# Oriented R-CNN with DINOv3 Backbone for DIOR-R Dataset (v2 — optimized)
+# Oriented R-CNN with DINOv3 ViT-B/16 Backbone for DIOR-R Dataset
 # =============================================================================
-# Backbone: Meta official DINOv3 ViT-L/16 (imported from dinov3 repo)
-# Neck: ViTDetFPN (proper FPN for ViT features)
+# Backbone: Meta official DINOv3 ViT-B/16 (imported from dinov3 repo)
+#   - embed_dim=768, 12 blocks, patch_size=16
+#   - Pretrained: LVD-1689M (dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth)
+# Neck: ViTDetFPN (proper FPN for ViT features, in_channels=768)
 # Head: Oriented R-CNN (rotated detection)
 #
-# v2 improvements (2026-06-15):
-#   1. RCNN NMS iou_thr: 0.1 → 0.5 (fixed overly aggressive suppression)
-#   2. RoI feat size: 7×7 → 14×14 (better small object detection)
-#   3. Label Smoothing: 0.1 (reduces overfitting)
-#   4. Class-balanced weights: rare classes (dam, trainstation) weighted higher
-#   5. Stronger augmentation: Albu (noise, blur, color jitter, CLAHE)
-#      + more aggressive PhotoMetricDistortion
-#
-# Baseline config:
-#   1. img_size=800 (DIOR images are ~800×800)
-#   2. 300-epoch training with cosine annealing
-#   3. EMA for smoother convergence
-#   4. Multi-scale training [600, 800, 1000]
-#   5. Frozen stages=0: all backbone params trained
+# Key differences from ViT-L config:
+#   1. ViT-B/16: 12 blocks (vs 24), embed_dim=768 (vs 1024)
+#   2. layers_to_use=[3, 5, 8, 11] for 12-block ViT
+#   3. Neck in_channels=768
 # =============================================================================
 
 _base_ = []
@@ -37,28 +29,28 @@ custom_imports = dict(
 
 model = dict(
     type='OrientedRCNN',
-    # -------------------------- Backbone: DINOv3 ViT-B/16 ------------------------
+    # -------------------------- Backbone: DINOv3 ViT-B/16 -----------------------
     # Official Meta DINOv3 ViT-Base imported from the dinov3 repository.
     # Outputs 4 feature maps at embed_dim=768, stride=16.
-    # frozen_stages=0 means ALL backbone params are trained (critical for mAP!).
+    # frozen_stages=0 means ALL backbone params are trained.
     backbone=dict(
         type='DinoVisionTransformerBackbone',
-        model_name='dinov3_vitl16',
+        model_name='dinov3_vitb16',
         pretrained=False,
-        layers_to_use=[5, 11, 17, 23],
+        layers_to_use=[3, 5, 8, 11],
         out_indices=(0, 1, 2, 3),
         use_layernorm=True,
         frozen_stages=0,
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth',
+            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
         ),
     ),
 
     # -------------------------- Neck: ViTDetFPN ----------------------------------
-    # in_channels=1024 matches ViT-L embed_dim.
+    # in_channels=768 matches ViT-B embed_dim.
     neck=dict(
         type='ViTDetFPN',
-        in_channels=1024,
+        in_channels=768,
         out_channels=256,
         num_outs=4,
         start_level=0,
@@ -99,9 +91,6 @@ model = dict(
     ),
 
     # -------------------------- ROI Head -----------------------------------------
-    # roi_feat_size=14 for better small object detection.
-    # class_weight uses inverse-sqrt frequency: rare classes (dam, trainstation)
-    # get higher weight, common classes (ship, vehicle) get lower weight.
     roi_head=dict(
         type='OrientedStandardRoIHead',
         bbox_roi_extractor=dict(
@@ -246,10 +235,10 @@ img_norm_cfg = dict(
     to_rgb=True,
 )
 
-# DIOR images are ~800×800 — no need for 1024 upscale
+# DIOR images are ~800x800
 image_size = (800, 800)
 
-# Multi-scale training scales (centered around 800)
+# Multi-scale training scales
 train_scales = [(600, 600), (800, 800), (1000, 1000)]
 
 train_pipeline = [
@@ -299,7 +288,6 @@ train_pipeline = [
     ),
 ]
 
-# Test pipeline (single-scale, no flip for safe evaluation)
 test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(
@@ -325,7 +313,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=4,
+    samples_per_gpu=16,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
@@ -400,7 +388,6 @@ log_config = dict(
     ],
 )
 
-# Exponential Moving Average for smoother convergence (~+0.5-1.0 mAP)
 custom_hooks = [
     dict(type='EMAHook', momentum=0.999, priority='ABOVE_NORMAL'),
 ]

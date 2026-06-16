@@ -14,6 +14,12 @@ SimpleFPN builds a proper feature pyramid by:
     - Level 2 (stride 2S):  downsample later feature
     - Level 3 (stride 4S):  further downsample
 
+When fuse_mode='top_down', cross-scale fusion is enabled (recommended):
+    After multi-scale features are generated, a top-down pathway fuses
+    deeper features into shallower ones via upsample + element-wise add,
+    injecting high-level semantic context into fine-resolution features.
+    This dramatically improves small object detection.
+
 Reference:
     ViTDet: https://arxiv.org/abs/2203.16527
 """
@@ -58,6 +64,9 @@ class SimpleFPN(BaseModule):
             to produce more levels. Options: False (no extra),
             'on_input' (on original features), 'on_output' (on FPN output).
             Default: False.
+        fuse_mode (str): Cross-scale fusion mode.
+            'none' (default): No fusion, each level independent.
+            'top_down': Top-down path fuses deep→shallow features.
         conv_cfg (dict): Config dict for convolution layers.
             Default: None (use nn.Conv2d).
         norm_cfg (dict): Config dict for normalization layers.
@@ -87,6 +96,7 @@ class SimpleFPN(BaseModule):
         num_outs: int = 4,
         start_level: int = 0,
         add_extra_convs: Union[bool, str] = False,
+        fuse_mode: str = 'none',
         conv_cfg: Optional[dict] = None,
         norm_cfg: Optional[dict] = None,
         act_cfg: Optional[dict] = None,
@@ -104,6 +114,7 @@ class SimpleFPN(BaseModule):
         self.num_outs = num_outs
         self.start_level = start_level
         self.add_extra_convs = add_extra_convs
+        self.fuse_mode = fuse_mode
 
         # Number of input features (expected 4 from ViT backbone)
         self.num_ins = 4
@@ -157,6 +168,19 @@ class SimpleFPN(BaseModule):
             )
             self.extra_downsamples.append(extra_conv)
 
+        # Top-down fusion pathway (optional)
+        if fuse_mode == 'top_down':
+            # Top-down smoothing 3x3 convs after element-wise add
+            self.top_down_convs = nn.ModuleList()
+            for i in range(self.num_ins - 1):
+                self.top_down_convs.append(
+                    ConvModule(
+                        out_channels, out_channels, kernel_size=3,
+                        stride=1, padding=1,
+                        norm_cfg=norm_cfg, act_cfg=act_cfg, inplace=False,
+                    )
+                )
+
     def init_weights(self):
         """Initialize weights."""
         if self.init_cfg is not None:
@@ -181,10 +205,10 @@ class SimpleFPN(BaseModule):
 
         Returns:
             tuple[Tensor]: Multi-scale feature maps at different strides.
-                P0: upsampled (2× resolution)
-                P1: pass-through (1× resolution)
-                P2: downsampled (1/2× resolution)
-                P3: further downsampled (1/4× resolution)
+                P0: upsampled (2x resolution)
+                P1: pass-through (1x resolution)
+                P2: downsampled (1/2x resolution)
+                P3: further downsampled (1/4x resolution)
         """
         assert len(inputs) == self.num_ins, (
             f'SimpleFPN expects {self.num_ins} input features, '
@@ -197,29 +221,37 @@ class SimpleFPN(BaseModule):
             for i in range(self.num_ins)
         ]
 
-        # Step 2: Build multi-scale outputs
+        # Step 2: Generate multi-scale features (before fpn_convs)
+        scale_feats = []
+
+        # S0: Upsample from f0 (stride S/2)
+        scale_feats.append(self.upsample_p0(laterals[0]))
+
+        # S1: Pass-through from f1 (stride S)
+        scale_feats.append(laterals[1])
+
+        # S2: Downsample from f2 (stride 2S)
+        scale_feats.append(self.downsample_p2(laterals[2]))
+
+        # S3: Double-downsample from f3 (stride 4S)
+        scale_feats.append(self.downsample_p3(self.downsample_p2(laterals[3])))
+
+        # Step 3: Top-down cross-scale fusion (if enabled)
+        if self.fuse_mode == 'top_down':
+            for i in range(self.num_ins - 2, -1, -1):
+                target_size = scale_feats[i].shape[-2:]
+                upsampled = F.interpolate(
+                    scale_feats[i + 1], size=target_size, mode='nearest',
+                )
+                fused = scale_feats[i] + upsampled
+                scale_feats[i] = self.top_down_convs[i](fused)
+
+        # Step 4: Apply FPN output convolutions (3x3 smoothing)
         outs = []
+        for i in range(self.num_ins):
+            outs.append(self.fpn_convs[i](scale_feats[i]))
 
-        # P0: Upsample from f0 (stride S/2)
-        p0 = self.upsample_p0(laterals[0])
-        p0 = self.fpn_convs[0](p0)
-        outs.append(p0)
-
-        # P1: Pass-through from f1 (stride S)
-        p1 = self.fpn_convs[1](laterals[1])
-        outs.append(p1)
-
-        # P2: Downsample from f2 (stride 2S)
-        p2 = self.downsample_p2(laterals[2])
-        p2 = self.fpn_convs[2](p2)
-        outs.append(p2)
-
-        # P3: Downsample from f3 → then downsample again (stride 4S)
-        p3 = self.downsample_p3(self.downsample_p2(laterals[3]))
-        p3 = self.fpn_convs[3](p3)
-        outs.append(p3)
-
-        # Step 3: Add extra output levels via further downsampling
+        # Step 5: Add extra output levels via further downsampling
         if len(self.extra_downsamples) > 0:
             if self.add_extra_convs == 'on_input':
                 extra_source = laterals[-1]

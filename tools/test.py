@@ -256,9 +256,16 @@ def main():
         )
 
     # Run evaluation
-    outputs = single_gpu_test(
-        model, data_loader, args.show, args.show_dir, args.show_score_thr
-    )
+    if distributed and not args.show and not args.show_dir:
+        outputs = multi_gpu_test(
+            model, data_loader, tmpdir=args.tmpdir, gpu_collect=args.gpu_collect
+        )
+    else:
+        if distributed and (args.show or args.show_dir):
+            print('WARNING: --show/--show-dir not supported in distributed mode, using single GPU.')
+        outputs = single_gpu_test(
+            model, data_loader, args.show, args.show_dir, args.show_score_thr
+        )
 
     # Save results
     rank, _ = get_dist_info()

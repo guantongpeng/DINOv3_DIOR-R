@@ -14,7 +14,27 @@
 |------|------|
 | 新增参数 `checkpoint_path: Optional[str] = None` | 本地 .pth 文件路径 |
 | 新增方法 `_load_local_checkpoint()` | 加载并解析本地 checkpoint |
+| 新增方法 `_remap_dinov3_official_to_timm()` | 官方 DINOv3 → timm key 自动映射 |
 | `__init__` 逻辑调整 | 若 `checkpoint_path` 不为 None，自动将 `pretrained` 设为 `False` |
+
+#### Key 自动映射
+
+官方 Meta DINOv3 checkpoint 使用与 timm 不同的命名约定，`_remap_dinov3_official_to_timm()`
+自动完成以下映射：
+
+| 官方 checkpoint key | timm model key |
+|---------------------|----------------|
+| `storage_tokens` | `reg_token` |
+| `blocks.X.ls1.gamma` | `blocks.X.gamma_1` |
+| `blocks.X.ls2.gamma` | `blocks.X.gamma_2` |
+| `blocks.X.attn.qkv.bias` | *(跳过 — timm 使用 bias-free qkv)* |
+| `blocks.X.attn.qkv.bias_mask` | *(跳过)* |
+| `mask_token` | *(跳过)* |
+| `rope_embed.periods` | *(跳过)* |
+
+> **重要**: 若日志显示 `137/162 keys matched, 25 missing` 而非 `162/162 keys matched, 0 missing`，
+> 说明映射未生效。缺失的 25 个 key 为 LayerScale 参数 (`gamma_1`, `gamma_2`) 和
+> `reg_token`，这些参数被随机初始化将严重影响模型精度。
 
 #### `_load_local_checkpoint` 支持的 checkpoint 格式
 
@@ -79,10 +99,14 @@ python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_star.py
 
 ```
 INFO - Loading DINOv3 checkpoint from local path: checkpoints/dinov3_vit_base_patch16.pth
-INFO - Extracted "teacher" from checkpoint (Meta DINOv3 format).
-INFO - DINOv3 checkpoint loaded: 320/320 keys matched, 0 missing, 0 unexpected.
+INFO - Using checkpoint dict directly as state dict.
+INFO - Remapped 25 checkpoint keys to timm naming convention.
+INFO - Skipped 24 qkv bias/bias_mask keys (timm uses bias-free fused qkv).
+INFO - DINOv3 checkpoint loaded: 162/162 keys matched, 0 missing, 0 unexpected.
 INFO - DINOv3 backbone loaded with local checkpoint weights: checkpoints/dinov3_vit_base_patch16.pth
 ```
+
+确保看到 `162/162 keys matched, 0 missing`。
 
 ## 兼容性
 
