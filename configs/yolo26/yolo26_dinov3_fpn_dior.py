@@ -67,7 +67,6 @@ model = dict(
         type='SimpleFPN',
         in_channels=768,
         out_channels=256,
-        num_ins=4,  # Must match backbone out_indices count
         num_outs=4,
         start_level=0,
         add_extra_convs=False,
