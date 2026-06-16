@@ -679,13 +679,15 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         losses[prefix + 'loss_angle'] = loss_angle
 
         # 4. Objectness loss — binary targets (FG=1, BG=0)
-        #    Using alignment scores as soft labels caused instability
-        #    because scores ~1e-6 yielded huge BCE loss (436+).
+        #    Computed over ALL grid points; normalize by total count (not
+        #    num_pos) since BG points dominate. Using num_pos as the divisor
+        #    causes loss ∝ total_points/num_pos, which explodes with fine
+        #    stride-4 grids (~53k points/image vs ~500 positives).
         obj_targets = fg_mask.float()  # Binary: 1=object, 0=background
         loss_obj = self.loss_obj(
             flatten_obj_preds.reshape(-1),
             obj_targets.reshape(-1),
-            avg_factor=num_total_samples,
+            avg_factor=float(flatten_obj_preds.numel()),
         )
         losses[prefix + 'loss_obj'] = loss_obj
 
