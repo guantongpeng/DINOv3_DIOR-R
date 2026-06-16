@@ -67,10 +67,10 @@ model = dict(
     #          P1: 100×100 (s8)  — medium objects
     #          P2: 50×50  (s16)  — large objects
     #          P3: 25×25  (s32)  — very large objects
-    # in_channels=256: backbone output already projected to 256 channels.
+    # in_channels=768: ViT-B native embed_dim. 1×1 lateral_convs map 768→256.
     neck=dict(
         type='ViTDetFPN',
-        in_channels=256,
+        in_channels=768,
         out_channels=256,
         num_outs=4,
         start_level=0,

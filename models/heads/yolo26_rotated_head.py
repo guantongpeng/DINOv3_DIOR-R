@@ -670,7 +670,7 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         # 3. Angle loss — compare decoded angle prediction to GT angle
         if num_pos > 0:
             loss_angle = self.loss_angle(
-                angle_pred_decoded,
+                pred_bboxes[:, 4:5],
                 fg_bbox_targets[:, 4:5],
                 avg_factor=num_total_samples,
             )
