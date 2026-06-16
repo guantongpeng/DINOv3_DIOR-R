@@ -1,14 +1,22 @@
 # =============================================================================
-# Oriented R-CNN with DINOv3 Backbone for DIOR-R Dataset
+# YOLO26 Detection Head with DINOv3 Backbone for DIOR-R Dataset
 # =============================================================================
-# This configuration fine-tunes DINOv3 (ViT-Base) as the backbone for
-# Oriented R-CNN on the DIOR-R remote sensing dataset.
+# This configuration uses YOLO26's anchor-free rotated detection head with
+# the DINOv3 (ViT-Base) backbone and SimpleFPN neck for oriented object
+# detection on the DIOR-R remote sensing dataset.
 #
 # Model Architecture:
-#   Backbone: ViT-Base DINOv3 (pretrained, frozen first 8 blocks)
-#   Neck: SimpleFPN (builds multi-scale pyramid from ViT features)
-#   RPN: OrientedRPNHead
-#   ROI Head: OrientedStandardRoIHead with OrientedBBoxHead
+#   Backbone:  ViT-Base DINOv3 (pretrained, frozen first 8 blocks)
+#   Neck:      SimpleFPN (builds multi-scale pyramid from ViT features)
+#   Head:      YOLO26RotatedHead (anchor-free, dual-head, NMS-free)
+#
+# Key YOLO26 Features:
+#   - Anchor-free dense prediction (no manual anchor tuning)
+#   - Dual-head: O2M (Task-Aligned) + O2O (Hungarian matching)
+#   - NMS-free end-to-end inference via O2O head
+#   - Angle encoding: sigmoid → [-π/4, 3π/4]
+#   - Progressive Loss: shifts supervision from O2M to O2O
+#   - No DFL: lighter regression head
 #
 # Dataset: DIOR-R (20 classes, oriented bounding boxes)
 # =============================================================================
@@ -17,22 +25,26 @@ _base_ = []
 
 # ========================== Model Configuration ==========================
 
-# Custom imports for DINOv3 backbone and SimpleFPN
+# Custom imports for DINOv3 backbone, SimpleFPN, and YOLO26 head
 custom_imports = dict(
     imports=[
         'models.backbones.vit_dinov3',
         'models.necks.simple_fpn',
         'models.datasets.dior',
+        'models.heads.yolo26_rotated_head',
+        'models.detectors.dinov3_yolo26',
+        'models.hooks',
     ],
     allow_failed_imports=False,
 )
 
-# -------------------------- Backbone: DINOv3 ViT-B --------------------------
-# DINOv3 ViT-Base with patch_size=16, embed_dim=768, depth=12
-# Extract features from blocks [3, 5, 7, 11] for multi-scale representation
-# Freeze first 8 transformer blocks to preserve pretrained features
 model = dict(
-    type='OrientedRCNN',
+    type='DINOv3YOLO26',
+
+    # -------------------------- Backbone: DINOv3 ViT-B --------------------------
+    # DINOv3 ViT-Base with patch_size=16, embed_dim=768, depth=12
+    # Extract features from blocks [3, 5, 7, 11] for multi-scale representation
+    # Freeze first 8 transformer blocks to preserve pretrained features
     backbone=dict(
         type='ViTDinoV3',
         model_name='vit_base_patch16_dinov3',
@@ -61,144 +73,76 @@ model = dict(
         act_cfg=dict(type='GELU'),
     ),
 
-    # -------------------------- RPN Head --------------------------
-    # Oriented RPN generates rotated region proposals
-    rpn_head=dict(
-        type='OrientedRPNHead',
+    # -------------------------- YOLO26 Rotated Head --------------------------
+    # Anchor-free dual-head for rotated detection
+    # O2M head: Task-Aligned Label Assignment (TAL)
+    # O2O head: Hungarian matching for NMS-free inference
+    bbox_head=dict(
+        type='YOLO26RotatedHead',
+        num_classes=20,  # DIOR-R has 20 classes
         in_channels=256,
-        feat_channels=256,
-        version='le90',
-        anchor_generator=dict(
-            type='AnchorGenerator',
-            scales=[8],
-            ratios=[0.5, 1.0, 2.0],
-            strides=[8, 16, 32, 64],
-        ),
-        bbox_coder=dict(
-            type='MidpointOffsetCoder',
-            angle_range='le90',
-            target_means=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            target_stds=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-        ),
+        feat_channels=128,
+        stacked_convs=2,
+        strides=[8, 16, 32, 64],
+        reg_max=16,
+        use_dfl=False,  # YOLO26: DFL removed for lighter head
+
+        # Classification loss (Focal Loss with sigmoid)
         loss_cls=dict(
+            type='FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            alpha=0.25,
+            loss_weight=1.0,
+        ),
+
+        # Bounding box regression loss (RotatedIoULoss for rotated boxes)
+        loss_bbox=dict(
+            type='RotatedIoULoss',
+            loss_weight=2.5,
+        ),
+
+        # Angle regression loss
+        loss_angle=dict(
+            type='SmoothL1Loss',
+            beta=0.05,
+            loss_weight=1.0,
+        ),
+
+        # Objectness/quality loss
+        loss_obj=dict(
             type='CrossEntropyLoss',
             use_sigmoid=True,
             loss_weight=1.0,
-        ),
-        loss_bbox=dict(
-            type='SmoothL1Loss',
-            beta=1.0 / 9.0,
-            loss_weight=1.0,
-        ),
-    ),
-
-    # -------------------------- ROI Head --------------------------
-    roi_head=dict(
-        type='OrientedStandardRoIHead',
-        bbox_roi_extractor=dict(
-            type='RotatedSingleRoIExtractor',
-            roi_layer=dict(
-                type='RoIAlignRotated',
-                out_size=7,
-                sample_num=2,
-                clockwise=True,
-            ),
-            out_channels=256,
-            featmap_strides=[8, 16, 32, 64],
-        ),
-        bbox_head=dict(
-            type='RotatedShared2FCBBoxHead',
-            in_channels=256,
-            fc_out_channels=1024,
-            roi_feat_size=7,
-            num_classes=20,  # DIOR-R has 20 classes
-            bbox_coder=dict(
-                type='DeltaXYWHAOBBoxCoder',
-                angle_range='le90',
-                target_means=[0.0, 0.0, 0.0, 0.0, 0.0],
-                target_stds=[0.1, 0.1, 0.2, 0.2, 0.1],
-            ),
-            reg_class_agnostic=True,
-            loss_cls=dict(
-                type='CrossEntropyLoss',
-                use_sigmoid=False,
-                loss_weight=1.0,
-            ),
-            loss_bbox=dict(
-                type='SmoothL1Loss',
-                beta=1.0,
-                loss_weight=1.0,
-            ),
         ),
     ),
 
     # -------------------------- Training Config --------------------------
     train_cfg=dict(
-        rpn=dict(
-            assigner=dict(
-                type='MaxIoUAssigner',
-                pos_iou_thr=0.7,
-                neg_iou_thr=0.3,
-                min_pos_iou=0.3,
-                match_low_quality=True,
-                ignore_iof_thr=-1,
-                gpu_assign_thr=200,
-            ),
-            sampler=dict(
-                type='RandomSampler',
-                num=256,
-                pos_fraction=0.5,
-                neg_pos_ub=-1,
-                add_gt_as_proposals=False,
-            ),
-            allowed_border=0,
-            pos_weight=-1,
-            debug=False,
-        ),
-        rpn_proposal=dict(
-            nms_pre=2000,
-            max_per_img=2000,
-            nms=dict(type='nms_rotated', iou_threshold=0.8),
-            min_bbox_size=0,
-        ),
-        rcnn=dict(
-            assigner=dict(
-                type='MaxIoUAssigner',
-                pos_iou_thr=0.5,
-                neg_iou_thr=0.5,
-                min_pos_iou=0.5,
-                match_low_quality=False,
-                ignore_iof_thr=-1,
-                iou_calculator=dict(type='RBboxOverlaps2D'),
-                gpu_assign_thr=200,
-            ),
-            sampler=dict(
-                type='RRandomSampler',
-                num=512,
-                pos_fraction=0.25,
-                neg_pos_ub=-1,
-                add_gt_as_proposals=True,
-            ),
-            pos_weight=-1,
-            debug=False,
+        # Task-Aligned Label Assignment parameters
+        tal_topk=10,        # Top-K anchors per GT for O2M
+        tal_alpha=1.0,      # Class weight in alignment metric
+        tal_beta=6.0,       # IoU weight in alignment metric
+
+        # Progressive loss schedule (O2O weight increase)
+        # Epoch:  0-12   → o2o_weight = 0 (O2M only)
+        # Epoch: 12-30   → o2o_weight: 0 → 1.0 (ramp up)
+        # Epoch: 30-36   → o2o_weight = 1.0 (O2M + O2O)
+        progressive_loss=dict(
+            start_epoch=12,
+            end_epoch=30,
         ),
     ),
 
     # -------------------------- Testing Config --------------------------
     test_cfg=dict(
-        rpn=dict(
-            nms_pre=2000,
-            max_per_img=2000,
-            nms=dict(type='nms_rotated', iou_threshold=0.8),
-            min_bbox_size=0,
-        ),
-        rcnn=dict(
-            nms_pre=2000,
-            min_bbox_size=0,
-            score_thr=0.05,
-            nms=dict(type='nms_rotated', iou_thr=0.1),
-            max_per_img=2000,
-        ),
+        # End-to-end NMS-free inference
+        end2end=True,
+        score_thr=0.05,
+        max_per_img=300,
+        # NMS config (fallback for O2M mode)
+        nms=dict(type='nms_rotated', iou_thr=0.1),
+        nms_pre=2000,
     ),
 )
 
@@ -214,7 +158,7 @@ img_norm_cfg = dict(
     to_rgb=True,
 )
 
-# Image size for DIOR-R (resize to 800x800)
+# Image size for DIOR-R
 image_size = (800, 800)
 
 # -------------------------- Training Pipeline --------------------------
@@ -303,7 +247,7 @@ evaluation = dict(
 
 # ========================== Optimization Configuration ==========================
 # Optimizer: AdamW with layer-wise learning rate decay
-# Lower lr for pretrained backbone, higher lr for randomly initialized heads
+# Lower lr for pretrained backbone, higher lr for randomly initialized head
 optimizer = dict(
     type='AdamW',
     lr=1e-4,
@@ -324,7 +268,7 @@ optimizer_config = dict(
 lr_config = dict(
     policy='CosineAnnealing',
     warmup='linear',
-    warmup_iters=500,
+    warmup_iters=1000,  # Longer warmup for YOLO-style head
     warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3,
 )
@@ -364,4 +308,12 @@ mp_start_method = 'fork'
 auto_scale_lr = dict(base_batch_size=16)
 
 # ========================== Custom Hooks ==========================
-custom_hooks = []
+# Progressive loss hook: shifts supervision from O2M to O2O
+custom_hooks = [
+    dict(
+        type='ProgressiveLossHook',
+        start_epoch=12,
+        end_epoch=30,
+        priority='LOW',
+    ),
+]
