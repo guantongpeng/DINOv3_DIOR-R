@@ -51,9 +51,6 @@ from mmrotate.core import build_bbox_coder, multiclass_nms_rotated, obb2poly_np
 from mmrotate.models.builder import ROTATED_HEADS, build_loss
 from mmrotate.models.dense_heads.rotated_anchor_free_head import RotatedAnchorFreeHead
 
-INF = 1e8
-
-
 @ROTATED_HEADS.register_module()
 class YOLO26RotatedHead(RotatedAnchorFreeHead):
     """YOLO26-style anchor-free rotated detection head.
@@ -654,25 +651,10 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         fg_bbox_targets = assigned_bbox_targets.reshape(-1, 5)[fg_mask]
 
         if num_pos > 0:
-            px, py = fg_points[:, 0], fg_points[:, 1]
-            l, t, r, b = fg_ltrb[:, 0], fg_ltrb[:, 1], fg_ltrb[:, 2], fg_ltrb[:, 3]
-
             # Decode to rotated boxes: (x, y, w, h, angle)
-            x1 = px - l
-            y1 = py - t
-            x2 = px + r
-            y2 = py + b
-            w_pred = (x2 - x1).clamp(min=1.0)
-            h_pred = (y2 - y1).clamp(min=1.0)
-            cx_pred = (x1 + x2) / 2.0
-            cy_pred = (y1 + y2) / 2.0
-            angle_pred_decoded = (fg_angle_raw.sigmoid() - 0.25) * math.pi
-
-            pred_bboxes = torch.cat([
-                cx_pred.unsqueeze(-1), cy_pred.unsqueeze(-1),
-                w_pred.unsqueeze(-1), h_pred.unsqueeze(-1),
-                angle_pred_decoded,
-            ], dim=-1)  # (N_fg, 5)
+            pred_bboxes = self._decode_bboxes(
+                fg_ltrb, fg_angle_raw, fg_points,
+            )  # (N_fg, 5)
 
             # IoU loss — use unweighted sum / num_pos for stable gradients
             loss_bbox = self.loss_bbox(
@@ -787,22 +769,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             gt_label_i = gt_labels[i]  # (num_gt,)
 
             # Decode predicted rotated boxes from ltrb + point
-            px, py = points[:, 0], points[:, 1]  # (N_all,)
-            l, t, r, b = bbox_pred_i[:, 0], bbox_pred_i[:, 1], bbox_pred_i[:, 2], bbox_pred_i[:, 3]
-
-            x1 = px - l
-            y1 = py - t
-            x2 = px + r
-            y2 = py + b
-            w_pred = (x2 - x1).clamp(min=1.0)
-            h_pred = (y2 - y1).clamp(min=1.0)
-            cx_pred = (x1 + x2) / 2.0
-            cy_pred = (y1 + y2) / 2.0
-            angle_pred_decoded = (angle_pred_i.sigmoid() - 0.25) * math.pi
-
-            pred_bboxes = torch.stack([
-                cx_pred, cy_pred, w_pred, h_pred, angle_pred_decoded.squeeze(-1)
-            ], dim=-1)  # (N_all, 5)
+            pred_bboxes = self._decode_bboxes(
+                bbox_pred_i, angle_pred_i, points,
+            )  # (N_all, 5)
 
             if o2o_mode:
                 # Hungarian matching (one-to-one)
@@ -995,22 +964,40 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             best_anchor = topk_idx[cost[topk_idx, gt_i].argmin()]
             pos_indices.append(best_anchor)
 
-        # Unique check: if an anchor was selected for multiple GTs, keep the one with lowest cost
-        pos_indices = torch.tensor(pos_indices, device=device)
+        # Unique check: if an anchor was selected for multiple GTs, keep the
+        # one with the lowest matching cost (true greedy Hungarian-style).
+        pos_indices = torch.tensor(pos_indices, device=device)  # (num_gt,)
 
         if len(pos_indices) > 0:
-            # Filter out duplicate anchor assignments
-            _, unique_idx = torch.unique(pos_indices, return_inverse=False)
-            for idx in unique_idx:
-                anchor_idx = pos_indices[idx]
-                if idx < num_gt:
-                    assigned_label[anchor_idx] = gt_labels[idx]
-                    assigned_bbox[anchor_idx] = gt_bboxes[idx]
-                    assigned_angle[anchor_idx] = gt_bboxes[idx, 4:5]
-                    # Quality score = cls * iou
-                    assigned_score[anchor_idx] = (
-                        cls_score[anchor_idx, gt_labels[idx]] * ious[anchor_idx, idx]
-                    )
+            # Resolve duplicate anchor assignments: for each unique anchor,
+            # find the GT that has the lowest cost with it.
+            unique_anchors, inverse = torch.unique(
+                pos_indices, return_inverse=True,
+            )
+            # unique_anchors: unique anchor ids
+            # inverse[i]: index into unique_anchors for GT i
+
+            for u_idx, anchor_idx in enumerate(unique_anchors):
+                # All GTs whose best pick is this anchor
+                gt_mask = (inverse == u_idx)
+                candidate_gts = torch.where(gt_mask)[0]
+
+                if len(candidate_gts) > 1:
+                    # Multiple GTs want this anchor — pick the one with
+                    # the lowest combined cost (cls_cost + bbox_cost).
+                    costs_for_anchor = cost[anchor_idx, candidate_gts]
+                    best_gt = candidate_gts[costs_for_anchor.argmin()]
+                else:
+                    best_gt = candidate_gts[0]
+
+                assigned_label[anchor_idx] = gt_labels[best_gt]
+                assigned_bbox[anchor_idx] = gt_bboxes[best_gt]
+                assigned_angle[anchor_idx] = gt_bboxes[best_gt, 4:5]
+                # Quality score = cls * iou
+                assigned_score[anchor_idx] = (
+                    cls_score[anchor_idx, gt_labels[best_gt]]
+                    * ious[anchor_idx, best_gt]
+                )
 
         return assigned_label, assigned_bbox, assigned_angle, assigned_score
 
@@ -1037,69 +1024,42 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         )
         return ious.to(boxes1.dtype)
 
-    def _rbox2poly(self, rboxes: torch.Tensor) -> torch.Tensor:
-        """Convert rotated boxes (x, y, w, h, a) to polygons (8 vertices).
-
-        Args:
-            rboxes: (N, 5) rotated boxes.
-
-        Returns:
-            polys: (N, 8) polygon vertices [x1,y1,x2,y2,x3,y3,x4,y4].
-        """
-        x, y, w, h, a = rboxes[:, 0], rboxes[:, 1], rboxes[:, 2], rboxes[:, 3], rboxes[:, 4]
-        cos_a, sin_a = torch.cos(a), torch.sin(a)
-
-        # 4 corners of horizontal box: (x+-w/2, y+-h/2)
-        corners = torch.stack([
-            -w / 2, -h / 2,
-            w / 2, -h / 2,
-            w / 2, h / 2,
-            -w / 2, h / 2,
-        ], dim=-1).reshape(-1, 4, 2)  # (N, 4, 2)
-
-        # Rotation matrix per box
-        rot = torch.stack([
-            cos_a, -sin_a,
-            sin_a, cos_a,
-        ], dim=-1).reshape(-1, 2, 2)  # (N, 2, 2)
-
-        # Rotate corners
-        rotated = torch.bmm(corners, rot)  # (N, 4, 2)
-
-        # Translate
-        rotated[..., 0] += x.unsqueeze(-1)
-        rotated[..., 1] += y.unsqueeze(-1)
-
-        return rotated.reshape(-1, 8)  # (N, 8)
-
-    def _polygon_intersection_area(
-        self, poly1: torch.Tensor, poly2: torch.Tensor
+    @staticmethod
+    def _decode_bboxes(
+        ltrb_pred: torch.Tensor,
+        angle_pred: torch.Tensor,
+        points: torch.Tensor,
     ) -> torch.Tensor:
-        """Compute intersection area of two convex polygons using Sutherland-Hodgman.
+        """Decode (l,t,r,b) + point + angle into rotated boxes (x,y,w,h,a).
+
+        This is the shared decoding step used by loss, label assignment, and
+        post-processing.  ``ltrb_pred`` is assumed to have already been passed
+        through ``.exp()`` to guarantee positive distances.
 
         Args:
-            poly1: (8,) first polygon vertices.
-            poly2: (8,) second polygon vertices.
+            ltrb_pred: (N, 4) tensor of positive l,t,r,b distances.
+            angle_pred: (N, 1) tensor of raw angle logits.
+            points: (N, 2) tensor of grid-point (x, y) coordinates.
 
         Returns:
-            intersection area (scalar).
+            (N, 5) tensor of decoded rotated boxes [cx, cy, w, h, angle].
+            Angle is decoded as sigmoid(pred) * pi - pi/4 (range [-π/4, 3π/4]).
         """
-        # Simple approximation: use bounding box intersection
-        # For more accuracy, would need full polygon clipping
-        x1_min, x1_max = poly1[0::2].min(), poly1[0::2].max()
-        y1_min, y1_max = poly1[1::2].min(), poly1[1::2].max()
-        x2_min, x2_max = poly2[0::2].min(), poly2[0::2].max()
-        y2_min, y2_max = poly2[1::2].min(), poly2[1::2].max()
+        px, py = points[:, 0], points[:, 1]
+        l, t, r, b = (ltrb_pred[:, 0], ltrb_pred[:, 1],
+                       ltrb_pred[:, 2], ltrb_pred[:, 3])
 
-        inter_x1 = torch.max(x1_min, x2_min)
-        inter_y1 = torch.max(y1_min, y2_min)
-        inter_x2 = torch.min(x1_max, x2_max)
-        inter_y2 = torch.min(y1_max, y2_max)
+        x1 = px - l
+        y1 = py - t
+        x2 = px + r
+        y2 = py + b
+        w = (x2 - x1).clamp(min=1.0)
+        h = (y2 - y1).clamp(min=1.0)
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+        angle = (angle_pred.sigmoid() - 0.25) * math.pi
 
-        inter_w = (inter_x2 - inter_x1).clamp(min=0)
-        inter_h = (inter_y2 - inter_y1).clamp(min=0)
-
-        return inter_w * inter_h
+        return torch.stack([cx, cy, w, h, angle.squeeze(-1)], dim=-1)
 
     @force_fp32(
         apply_to=('cls_scores', 'bbox_preds', 'angle_preds', 'obj_preds')
@@ -1229,21 +1189,10 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             # Apply exp() to bbox_pred (matching training convention)
             bbox_pred_flat = bbox_pred_flat.exp()
 
-            # Convert predictions to rotated boxes
-            px, py = points[:, 0], points[:, 1]
-            l, t, r, b = bbox_pred_flat[:, 0], bbox_pred_flat[:, 1], bbox_pred_flat[:, 2], bbox_pred_flat[:, 3]
-
-            x1 = px - l
-            y1 = py - t
-            x2 = px + r
-            y2 = py + b
-            w = (x2 - x1).clamp(min=1.0)
-            h = (y2 - y1).clamp(min=1.0)
-            cx = (x1 + x2) / 2.0
-            cy = (y1 + y2) / 2.0
-            angle = (angle_pred_flat.sigmoid() - 0.25) * math.pi
-
-            decoded_bboxes = torch.stack([cx, cy, w, h, angle.squeeze(-1)], dim=-1)
+            # Decode predictions to rotated boxes
+            decoded_bboxes = self._decode_bboxes(
+                bbox_pred_flat, angle_pred_flat, points,
+            )  # (N_level, 5)
 
             # Compute scores
             cls_scores_sig = cls_score_flat.sigmoid()
@@ -1313,20 +1262,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             bbox_pred_flat = bbox_pred_flat.exp()
 
             # Decode bboxes
-            px, py = points[:, 0], points[:, 1]
-            l, t, r, b = bbox_pred_flat[:, 0], bbox_pred_flat[:, 1], bbox_pred_flat[:, 2], bbox_pred_flat[:, 3]
-
-            x1 = px - l
-            y1 = py - t
-            x2 = px + r
-            y2 = py + b
-            w = (x2 - x1).clamp(min=1.0)
-            h = (y2 - y1).clamp(min=1.0)
-            cx = (x1 + x2) / 2.0
-            cy = (y1 + y2) / 2.0
-            angle = (angle_pred_flat.sigmoid() - 0.25) * math.pi
-
-            decoded_bboxes = torch.stack([cx, cy, w, h, angle.squeeze(-1)], dim=-1)
+            decoded_bboxes = self._decode_bboxes(
+                bbox_pred_flat, angle_pred_flat, points,
+            )  # (N_level, 5)
 
             # Score = cls * obj
             scores = cls_score_flat.sigmoid() * obj_pred_flat.sigmoid()

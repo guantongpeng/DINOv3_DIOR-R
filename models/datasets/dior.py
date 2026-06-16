@@ -39,23 +39,6 @@ class DIORDataset(DOTADataset):
         img_ext (str): Image file extension. Default: '.jpg'.
     """
 
-    # # DIOR-R 20 object categories
-    # CLASSES = (
-    #         "两栖攻击舰", "侦察机", "加油机", "反潜巡逻机", "商业客机",
-    #         "坦克", "导弹快艇", "巡洋舰", "扫雷艇", "护卫舰",
-    #         "机场", "武装直升机", "民用客轮", "登陆舰", "空天战斗机",
-    #         "航空母舰", "补给舰", "装甲运输车", "轰炸机", "运输机",
-    #         "通用直升机", "重型运输车", "隐身战斗机", "预警机", "驱逐舰"
-    # )
-
-    # PALETTE = [
-    #     (165, 42, 42), (189, 183, 107), (0, 255, 0), (255, 0, 0),(138, 43, 226), 
-    #     (255, 128, 0), (255, 0, 255), (0, 255, 255),(255, 193, 193), (0, 51, 153),
-    #     (255, 250, 205), (0, 139, 139),(255, 255, 0), (147, 116, 116), (0, 0, 255),
-    #     (220, 20, 60),(128, 128, 0), (255, 215, 0), (128, 128, 128), (64, 224, 208),
-    #     (0, 0, 128), (255, 105, 180), (128, 0, 128), (0, 128, 128), (255, 165, 0),
-    # ]
-
     CLASSES = (
         'airplane', 'airport', 'baseballfield', 'basketballcourt', 'bridge',
         'chimney', 'dam', 'Expressway-Service-area',
@@ -107,7 +90,8 @@ class DIORDataset(DOTADataset):
         data_infos = []
 
         if not ann_files:
-            # Test phase: find all images in img_prefix
+            # Test phase: no annotation files, img_ids may be set externally
+            self.img_ids = []
             return []
 
         for ann_file in ann_files:
@@ -207,7 +191,7 @@ class DIORDataset(DOTADataset):
 
         annotations = [self.get_ann_info(i) for i in range(len(self))]
         eval_results = {}
-        nproc = min(nproc, os.cpu_count())
+        nproc = min(nproc, os.cpu_count() or 4)
 
         if metric == 'mAP':
             mean_ap, cls_results = eval_rbbox_map(

@@ -2,12 +2,12 @@
 # YOLO26 Detection Head with DINOv3 Backbone for DIOR-R Dataset
 # =============================================================================
 # This configuration uses YOLO26's anchor-free rotated detection head with
-# the DINOv3 (ViT-Base) backbone and SimpleFPN neck for oriented object
+# the DINOv3 (ViT-Base) backbone and ViTDetFPN neck for oriented object
 # detection on the DIOR-R remote sensing dataset.
 #
 # Model Architecture:
 #   Backbone:  ViT-Base DINOv3 (pretrained, frozen first 8 blocks)
-#   Neck:      SimpleFPN (builds multi-scale pyramid from ViT features)
+#   Neck:      ViTDetFPN (proper FPN with SE attention, strides [4,8,16,32])
 #   Head:      YOLO26RotatedHead (anchor-free, dual-head, NMS-free)
 #
 # Key YOLO26 Features:
@@ -25,11 +25,10 @@ _base_ = []
 
 # ========================== Model Configuration ==========================
 
-# Custom imports for DINOv3 backbone, SimpleFPN, and YOLO26 head
+# Custom imports for DINOv3 backbone, ViTDetFPN neck, and YOLO26 head
 custom_imports = dict(
     imports=[
         'models.backbones.dinov3_wrapper',
-        'models.necks.simple_fpn',
         'models.necks.vitdet_fpn',
         'models.datasets.dior',
         'models.heads.yolo26_rotated_head',
@@ -50,7 +49,7 @@ model = dict(
         type='DinoVisionTransformerBackbone',
         model_name='dinov3_vitb16',
         pretrained=False,
-        layers_to_use=[3, 5, 8, 11],
+        layers_to_use=[3, 5, 7, 11],  # ViTDetFPN standard: f0=f3, f1=f5, f2=f7, f3=f11
         out_indices=(0, 1, 2, 3),
         use_layernorm=True,
         frozen_stages=0,
@@ -59,17 +58,24 @@ model = dict(
         ),
     ),
 
-    # -------------------------- Neck: ViTDetFPN --------------------------
-    # Converts same-resolution ViT features into multi-scale pyramid
-    # Input:  4 features at stride 16 (50x50 for 800x800 images)
-    # Output: 4 features at strides [8, 16, 32, 64]
+    # -------------------------- Neck: ViTDetFPN ----------------------------------
+    # ViTDetFPN: proper FPN for ViT features with progressive upsampling,
+    # top-down cross-scale fusion, and SE channel attention.
+    # Input:  4 features at stride 16 (50×50 for 800×800 images)
+    # Output: 4 features at strides [4, 8, 16, 32]
+    #          P0: 200×200 (s4)  — fine detail for small objects
+    #          P1: 100×100 (s8)  — medium objects
+    #          P2: 50×50  (s16)  — large objects
+    #          P3: 25×25  (s32)  — very large objects
+    # in_channels=256: backbone output already projected to 256 channels.
     neck=dict(
-        type='SimpleFPN',
-        in_channels=768,
+        type='ViTDetFPN',
+        in_channels=256,
         out_channels=256,
         num_outs=4,
         start_level=0,
         add_extra_convs=False,
+        se_reduction=16,
         norm_cfg=dict(type='GN', num_groups=32, requires_grad=True),
         act_cfg=dict(type='GELU'),
     ),
@@ -84,7 +90,7 @@ model = dict(
         in_channels=256,
         feat_channels=128,
         stacked_convs=2,
-        strides=[8, 16, 32, 64],
+        strides=[4, 8, 16, 32],  # ViTDetFPN output strides
         reg_max=16,
         use_dfl=False,  # YOLO26: DFL removed for lighter head
 

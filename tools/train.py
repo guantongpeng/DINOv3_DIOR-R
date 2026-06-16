@@ -331,10 +331,20 @@ def main():
     model.CLASSES = datasets[0].CLASSES
 
     if distributed:
-        # Set find_unused_parameters=True for DDP to handle parameters
-        # that are not used in loss computation (e.g., frozen backbone layers)
-        cfg.find_unused_parameters = True
-        logger.info("find_unused_parameters=True is enabled in DDP, allowing some parameters to be excluded from gradient computation.")
+        # Enable find_unused_parameters only when necessary (frozen backbone
+        # or progressive O2O training create params outside the loss graph).
+        # Otherwise skip it to avoid the ~10-20% DDP overhead.
+        frozen_stages = cfg.model.get('backbone', {}).get('frozen_stages', -1)
+        progressive_cfg = cfg.model.get('train_cfg', {}).get('progressive_loss', None)
+        if frozen_stages >= 0 or progressive_cfg is not None:
+            cfg.find_unused_parameters = True
+            logger.info(
+                'find_unused_parameters=True (frozen_stages=%s, progressive_loss=%s)',
+                frozen_stages, progressive_cfg is not None,
+            )
+        else:
+            cfg.find_unused_parameters = False
+            logger.info('find_unused_parameters=False (no frozen stages or progressive loss)')
 
     # Train
     train_detector(

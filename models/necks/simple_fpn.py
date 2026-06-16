@@ -254,15 +254,12 @@ class SimpleFPN(BaseModule):
         # Step 5: Add extra output levels via further downsampling
         if len(self.extra_downsamples) > 0:
             if self.add_extra_convs == 'on_input':
-                extra_source = laterals[-1]
+                extra_source = laterals[-1]  # use the raw lateral feature
             else:
                 extra_source = outs[-1]
 
             for extra_conv in self.extra_downsamples:
-                if self.add_extra_convs == 'on_input':
-                    extra_feat = extra_conv(self.lateral_convs[-1](extra_source))
-                else:
-                    extra_feat = extra_conv(extra_source)
+                extra_feat = extra_conv(extra_source)
                 outs.append(extra_feat)
                 extra_source = extra_feat
 

@@ -220,7 +220,6 @@ class ViTDetFPN(BaseModule):
                 P3: stride 32 (H/2 × W/2)
         """
         assert len(inputs) == self.num_ins
-        B = inputs[0].shape[0]
 
         # Step 1: Pre-norm adaptation (LN → GN space + GELU)
         adapted = [self.pre_norms[i](inputs[i]) for i in range(self.num_ins)]
