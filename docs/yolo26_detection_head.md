@@ -165,9 +165,9 @@ python tools/test.py configs/yolo26/yolo26_dinov3_fpn_dior.py \
 | `feat_channels` | 128 | 检测头隐藏层通道数 |
 | `stacked_convs` | 2 | 每个分支的卷积层数 |
 | `strides` | [8, 16, 32, 64] | FPN 特征步长 |
-| `tal_topk` | 10 | TAL 分配中每个 GT 的 top-K 锚点数 |
+| `tal_topk` | 13 | TAL 分配中每个 GT 的 top-K 锚点数 |
 | `tal_alpha` | 1.0 | TAL 分类权重 |
-| `tal_beta` | 6.0 | TAL IoU 权重 |
+| `tal_beta` | 2.0 | TAL IoU 权重（降低以提升训练初期稳定性） |
 | `o2o_start_epoch` | 12 | 开始激活 O2O 分支的 epoch |
 | `o2o_end_epoch` | 30 | O2O 分支达到全权重的 epoch |
 
@@ -176,9 +176,27 @@ python tools/test.py configs/yolo26/yolo26_dinov3_fpn_dior.py \
 | Loss | 类型 | 权重 | 说明 |
 |------|------|------|------|
 | `loss_cls` | FocalLoss (sigmoid) | 1.0 | 分类损失，平衡正负样本 |
-| `loss_bbox` | RotatedIoULoss | 2.5 | 旋转框 IoU 损失，优化位置和大小 |
-| `loss_angle` | SmoothL1Loss (β=0.05) | 1.0 | 角度回归损失 |
-| `loss_obj` | BCEWithLogitsLoss | 1.0 | 目标性/质量损失 |
+| `loss_bbox` | RotatedIoULoss | 2.5 | 旋转框 IoU 损失（在 exp 解码后的框上计算） |
+| `loss_angle` | SmoothL1Loss (β=0.05) | 1.0 | 解码后角度 vs GT 角度的回归损失 |
+| `loss_obj` | BCEWithLogitsLoss | 1.0 | 二值目标性损失 (FG=1, BG=0) |
+
+### BBox 解码
+
+训练和推理使用一致的解码流程：
+
+```python
+# Step 1: exp() 确保距离为正
+l, t, r, b = exp(bbox_pred_raw)
+
+# Step 2: 从网格点 + 距离解码 (x, y, w, h)
+x1, y1 = px - l, py - t     # 左上角
+x2, y2 = px + r, py + b     # 右下角
+cx, cy = (x1+x2)/2, (y1+y2)/2
+w, h = (x2-x1), (y2-y1)
+
+# Step 3: 角度解码
+angle = (sigmoid(angle_raw) - 0.25) × π  # 范围 [-π/4, 3π/4]
+```
 
 ## DIOR-R 数据集
 

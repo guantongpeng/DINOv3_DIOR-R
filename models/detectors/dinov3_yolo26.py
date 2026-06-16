@@ -132,8 +132,6 @@ class DINOv3YOLO26(RotatedBaseDetector):
         Returns:
             Dict of loss components.
         """
-        super().forward_train(img, img_metas)
-
         # Extract features through backbone + neck
         x = self.extract_feat(img)
 

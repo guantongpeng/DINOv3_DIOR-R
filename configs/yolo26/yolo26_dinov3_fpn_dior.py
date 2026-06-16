@@ -30,6 +30,7 @@ custom_imports = dict(
     imports=[
         'models.backbones.vit_dinov3',
         'models.necks.simple_fpn',
+        'models.necks.vitdet_fpn',
         'models.datasets.dior',
         'models.heads.yolo26_rotated_head',
         'models.detectors.dinov3_yolo26',
@@ -58,14 +59,15 @@ model = dict(
         init_cfg=None,
     ),
 
-    # -------------------------- Neck: SimpleFPN --------------------------
+    # -------------------------- Neck: ViTDetFPN --------------------------
     # Converts same-resolution ViT features into multi-scale pyramid
     # Input:  4 features at stride 16 (50x50 for 800x800 images)
     # Output: 4 features at strides [8, 16, 32, 64]
     neck=dict(
-        type='SimpleFPN',
+        type='ViTDetFPN',
         in_channels=256,
         out_channels=256,
+        num_ins=4,  # Must match backbone out_indices count
         num_outs=4,
         start_level=0,
         add_extra_convs=False,
@@ -120,9 +122,11 @@ model = dict(
     # -------------------------- Training Config --------------------------
     train_cfg=dict(
         # Task-Aligned Label Assignment parameters
-        tal_topk=10,        # Top-K anchors per GT for O2M
+        tal_topk=13,        # Top-K anchors per GT for O2M (YOLO standard: 13)
         tal_alpha=1.0,      # Class weight in alignment metric
-        tal_beta=6.0,       # IoU weight in alignment metric
+        tal_beta=2.0,       # IoU weight in alignment metric (reduced from 6.0
+                            # for stable initial training; higher values
+                            # overly suppress low-IoU anchors)
 
         # Progressive loss schedule (O2O weight increase)
         # Epoch:  0-12   → o2o_weight = 0 (O2M only)

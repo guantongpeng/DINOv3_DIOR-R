@@ -573,6 +573,7 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         """
         num_levels = len(cls_scores)
         featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
+        num_imgs = cls_scores[0].size(0)
 
         # Generate grid points for all FPN levels
         all_level_points = self.prior_generator.grid_priors(
@@ -580,9 +581,6 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             dtype=bbox_preds[0].dtype,
             device=bbox_preds[0].device,
         )
-
-        # Compute task-aligned label assignment
-        num_imgs = cls_scores[0].size(0)
 
         # Flatten predictions
         flatten_cls_scores = [
@@ -609,7 +607,14 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         flatten_obj_preds = torch.cat(flatten_obj_preds, dim=1)  # (B, N, 1)
         flatten_points = torch.cat(all_level_points, dim=0)  # (N, 2)
 
-        # Task-Aligned Label Assignment per image
+        # ---- Decode bbox predictions (FCOS-style: exp for distance) ----
+        # Apply exp() to ltrb predictions to ensure positive distances.
+        # This matches FCOS convention where bbox_pred = exp(raw_output).
+        # Without exp, raw outputs ~N(0,0.01) produce tiny boxes that never
+        # overlap with GTs, causing zero IoU loss and no learning signal.
+        decoded_bbox_preds = flatten_bbox_preds.exp()  # (B, N, 4)
+
+        # Task-Aligned Label Assignment uses decoded boxes for IoU computation
         (
             assigned_labels,
             assigned_bbox_targets,
@@ -618,7 +623,7 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             fg_mask,
         ) = self._tal_assign(
             flatten_cls_scores,
-            flatten_bbox_preds,
+            decoded_bbox_preds,
             flatten_angle_preds,
             flatten_points,
             gt_bboxes,
@@ -626,15 +631,13 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             o2o_mode=o2o_mode,
         )
 
-        num_total_samples = max(
-            reduce_mean(fg_mask.sum().to(flatten_cls_scores.dtype)),
-            1.0,
-        )
+        num_pos = fg_mask.sum().to(flatten_cls_scores.dtype)
+        num_total_samples = max(reduce_mean(num_pos), 1.0)
 
         # Compute losses
         losses = {}
 
-        # 1. Classification loss (Focal Loss)
+        # 1. Classification loss (Focal Loss) — uses label assignment directly
         loss_cls = self.loss_cls(
             flatten_cls_scores.reshape(-1, self.cls_out_channels),
             assigned_labels.reshape(-1),
@@ -642,78 +645,64 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         )
         losses[prefix + 'loss_cls'] = loss_cls
 
-        # 2. Bounding box regression loss (RotatedIoULoss)
-        fg_bbox_preds = flatten_bbox_preds.reshape(-1, 4)[fg_mask]
-        fg_angle_preds = flatten_angle_preds.reshape(-1, 1)[fg_mask]
+        # 2. Bounding box regression loss
+        #    Decode exp(ltrb) + point + angle → rotated boxes, then IoU loss
+        fg_ltrb = decoded_bbox_preds.reshape(-1, 4)[fg_mask]
+        fg_angle_raw = flatten_angle_preds.reshape(-1, 1)[fg_mask]
         fg_points = flatten_points.unsqueeze(0).expand(num_imgs, -1, -1)
         fg_points = fg_points.reshape(-1, 2)[fg_mask]
         fg_bbox_targets = assigned_bbox_targets.reshape(-1, 5)[fg_mask]
-        fg_scores = assigned_scores.reshape(-1)[fg_mask]
 
-        if fg_mask.sum() > 0:
-            # Decode predicted boxes using points as reference
-            # Build rotated bbox pred: (l, t, r, b) + angle → (x, y, w, h, a)
-            pred_ltrb = fg_bbox_preds  # (l, t, r, b) distances from point
-            pred_angle = fg_angle_preds  # raw angle logit
-
-            # Convert ltrb + point to (cx, cy, w, h)
-            # For a point (px, py) with predictions (l, t, r, b):
-            #   x1 = px - l, y1 = py - t, x2 = px + r, y2 = py + b
-            #   cx = (x1 + x2) / 2, cy = (y1 + y2) / 2, w = x2 - x1, h = y2 - y1
+        if num_pos > 0:
             px, py = fg_points[:, 0], fg_points[:, 1]
-            l, t, r, b = pred_ltrb[:, 0], pred_ltrb[:, 1], pred_ltrb[:, 2], pred_ltrb[:, 3]
+            l, t, r, b = fg_ltrb[:, 0], fg_ltrb[:, 1], fg_ltrb[:, 2], fg_ltrb[:, 3]
 
+            # Decode to rotated boxes: (x, y, w, h, angle)
             x1 = px - l
             y1 = py - t
             x2 = px + r
             y2 = py + b
-            w = (x2 - x1).clamp(min=1.0)
-            h = (y2 - y1).clamp(min=1.0)
-            cx = (x1 + x2) / 2.0
-            cy = (y1 + y2) / 2.0
+            w_pred = (x2 - x1).clamp(min=1.0)
+            h_pred = (y2 - y1).clamp(min=1.0)
+            cx_pred = (x1 + x2) / 2.0
+            cy_pred = (y1 + y2) / 2.0
+            angle_pred_decoded = (fg_angle_raw.sigmoid() - 0.25) * math.pi
 
-            # Angle decoding: sigmoid mapping to [-pi/4, 3pi/4]
-            angle = (pred_angle.sigmoid() - 0.25) * math.pi
+            pred_bboxes = torch.cat([
+                cx_pred.unsqueeze(-1), cy_pred.unsqueeze(-1),
+                w_pred.unsqueeze(-1), h_pred.unsqueeze(-1),
+                angle_pred_decoded,
+            ], dim=-1)  # (N_fg, 5)
 
-            # Build predicted rotated boxes
-            pred_bboxes = torch.cat([cx.unsqueeze(-1), cy.unsqueeze(-1),
-                                     w.unsqueeze(-1), h.unsqueeze(-1),
-                                     angle], dim=-1)  # (N_fg, 5)
-
-            # Compute RotatedIoU loss
-            if fg_scores.numel() > 0:
-                loss_bbox = self.loss_bbox(
-                    pred_bboxes,
-                    fg_bbox_targets,
-                    weight=fg_scores,
-                    avg_factor=fg_scores.sum(),
-                )
-            else:
-                loss_bbox = self.loss_bbox(
-                    pred_bboxes,
-                    fg_bbox_targets,
-                    avg_factor=num_total_samples,
-                )
+            # IoU loss — use unweighted sum / num_pos for stable gradients
+            loss_bbox = self.loss_bbox(
+                pred_bboxes,
+                fg_bbox_targets,
+                avg_factor=num_total_samples,
+            )
         else:
-            loss_bbox = pred_ltrb.sum() * 0.0
+            loss_bbox = flatten_bbox_preds.sum() * 0.0
 
         losses[prefix + 'loss_bbox'] = loss_bbox
 
-        # 3. Angle loss
-        if fg_mask.sum() > 0:
+        # 3. Angle loss — compare decoded angle prediction to GT angle
+        if num_pos > 0:
             loss_angle = self.loss_angle(
-                fg_angle_preds,
+                angle_pred_decoded,
                 fg_bbox_targets[:, 4:5],
                 avg_factor=num_total_samples,
             )
         else:
-            loss_angle = fg_angle_preds.sum() * 0.0
+            loss_angle = flatten_angle_preds.sum() * 0.0
         losses[prefix + 'loss_angle'] = loss_angle
 
-        # 4. Objectness loss
+        # 4. Objectness loss — binary targets (FG=1, BG=0)
+        #    Using alignment scores as soft labels caused instability
+        #    because scores ~1e-6 yielded huge BCE loss (436+).
+        obj_targets = fg_mask.float()  # Binary: 1=object, 0=background
         loss_obj = self.loss_obj(
             flatten_obj_preds.reshape(-1),
-            assigned_scores.reshape(-1),
+            obj_targets.reshape(-1),
             avg_factor=num_total_samples,
         )
         losses[prefix + 'loss_obj'] = loss_obj
@@ -1032,9 +1021,7 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
 
         Boxes are in (x, y, w, h, angle) format with le90 angle range.
 
-        Uses a simplified approximate IoU computation that is differentiable.
-        For exact computation, we convert to polygons and use shapely or
-        box_iou_rotated from mmrotate.
+        Uses mmrotate's vectorized rbbox_overlaps for efficient GPU computation.
 
         Args:
             boxes1: (N, 5) tensor of predicted boxes.
@@ -1043,35 +1030,12 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         Returns:
             iou_matrix: (N, M) tensor of IoU values.
         """
-        # Use mmrotate's box_iou_rotated for accuracy
-        try:
-            from mmrotate.core.bbox.iou_calculators import rbox_overlaps
-            ious = rbox_overlaps(
-                boxes1, boxes2, mode='iou', is_aligned=False
-            )
-            return ious.to(boxes1.dtype)
-        except (ImportError, AttributeError):
-            pass
+        from mmrotate.core.bbox.iou_calculators import rbbox_overlaps
 
-        # Fallback: approximate rotated IoU using polygon intersection
-        # Convert rotated boxes to polygons
-        polys1 = self._rbox2poly(boxes1)  # (N, 8)
-        polys2 = self._rbox2poly(boxes2)  # (M, 8)
-
-        N, M = boxes1.shape[0], boxes2.shape[0]
-        ious = torch.zeros((N, M), device=boxes1.device, dtype=boxes1.dtype)
-
-        # Compute area for all boxes
-        area1 = boxes1[:, 2] * boxes1[:, 3]  # w * h
-        area2 = boxes2[:, 2] * boxes2[:, 3]  # w * h
-
-        for i in range(N):
-            for j in range(M):
-                inter_area = self._polygon_intersection_area(polys1[i], polys2[j])
-                union_area = area1[i] + area2[j] - inter_area
-                ious[i, j] = inter_area / (union_area + 1e-7)
-
-        return ious
+        ious = rbbox_overlaps(
+            boxes1, boxes2, mode='iou', is_aligned=False
+        )
+        return ious.to(boxes1.dtype)
 
     def _rbox2poly(self, rboxes: torch.Tensor) -> torch.Tensor:
         """Convert rotated boxes (x, y, w, h, a) to polygons (8 vertices).
@@ -1262,6 +1226,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             angle_pred_flat = angle_pred.permute(1, 2, 0).reshape(-1, 1)
             obj_pred_flat = obj_pred.permute(1, 2, 0).reshape(-1, 1)
 
+            # Apply exp() to bbox_pred (matching training convention)
+            bbox_pred_flat = bbox_pred_flat.exp()
+
             # Convert predictions to rotated boxes
             px, py = points[:, 0], points[:, 1]
             l, t, r, b = bbox_pred_flat[:, 0], bbox_pred_flat[:, 1], bbox_pred_flat[:, 2], bbox_pred_flat[:, 3]
@@ -1341,6 +1308,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             bbox_pred_flat = bbox_pred.permute(1, 2, 0).reshape(-1, 4)
             angle_pred_flat = angle_pred.permute(1, 2, 0).reshape(-1, 1)
             obj_pred_flat = obj_pred.permute(1, 2, 0).reshape(-1, 1)
+
+            # Apply exp() to bbox_pred (matching training convention)
+            bbox_pred_flat = bbox_pred_flat.exp()
 
             # Decode bboxes
             px, py = points[:, 0], points[:, 1]
