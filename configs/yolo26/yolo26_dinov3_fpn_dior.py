@@ -64,8 +64,8 @@ model = dict(
     # Input:  4 features at stride 16 (50x50 for 800x800 images)
     # Output: 4 features at strides [8, 16, 32, 64]
     neck=dict(
-        type='ViTDetFPN',
-        in_channels=256,
+        type='SimpleFPN',
+        in_channels=768,
         out_channels=256,
         num_ins=4,  # Must match backbone out_indices count
         num_outs=4,
@@ -216,7 +216,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=16,
+    samples_per_gpu=32,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
