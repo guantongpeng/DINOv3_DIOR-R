@@ -1,69 +1,82 @@
 # =============================================================================
-# Oriented R-CNN with DINOv3 Backbone for Star-1021+Extend3 Dataset
+# Oriented R-CNN + DINOv3 ViT-B/16 for DIOR-R  (v3 — ViTDet SimpleFPN + clean aug)
 # =============================================================================
-# This configuration fine-tunes DINOv3 (ViT-Base) as the backbone for
-# Oriented R-CNN on the Star-1021+Extend3 remote sensing dataset.
+# Key changes vs the original ViTDetFPN config (addressing val=0.72 / test=0.60):
 #
-# Model Architecture:
-#   Backbone: ViT-Base DINOv3 (pretrained, frozen first 8 blocks)
-#   Neck: SimpleFPN (builds multi-scale pyramid from ViT features)
-#   RPN: OrientedRPNHead
-#   ROI Head: OrientedStandardRoIHead with OrientedBBoxHead
+#   1. NECK -> standard ViTDet SimpleFeaturePyramid (single last-block feature
+#      + deconv pyramid). The old neck fed 4 transformer-block outputs in as if
+#      they were 4 scales; shallow block-3 features upscaled 4x into the stride-4
+#      level were noisy. Using only the richest (last) feature is the proven
+#      ViTDet recipe (Li et al., ECCV 2022).
+#      -> Backbone now outputs ONLY the last block (layers_to_use=[11]).
 #
-# Dataset: Star-1021+Extend3 (25 classes, oriented bounding boxes)
+#   2. AUGMENTATION: removed the double color jitter (Albu + PhotoMetricDistortion)
+#      and the diagonal flip. Kept multi-scale + a single, moderate photometric
+#      distortion + horizontal/vertical flips. The previous setup destroyed
+#      pretrained ViT features / RS spectral content and corrupted angle labels.
+#
+#   3. CLASS WEIGHTS removed: the old hand-tuned weights down-weighted the
+#      majority classes to 0.12-0.15, which tanks their AP and thus the
+#      macro-mAP (each class = 1/20 of the mean). Uniform CE is the clean baseline.
+#
+#   4. SCHEDULE: 300 -> 120 epochs (the small set over-fits the trainval
+#      distribution long before 300ep; EMA + cosine still converge well).
+#      Eval every 2 epochs for finer model selection.
+#
+#   5. batch 16 -> 8 (SimpleFeaturePyramid upsamples in 768ch, heavier than the
+#      old 256ch neck). Scale up if GPU memory allows.
+#
+# Data strategy: val is kept as a held-out set (same trainval pool as train) for
+# model selection. NOTE: because val ~ train distribution, val mAP tracks
+# in-distribution fit and will NOT predict test-set generalization — use it for
+# relative comparisons only. For the final number, retrain on the FULL trainval
+# (merge train+val) and evaluate on the official test split.
 # =============================================================================
 
 _base_ = []
 
 # ========================== Model Configuration ==========================
 
-# Custom imports for DINOv3 backbone and SimpleFPN
 custom_imports = dict(
     imports=[
-        'models.backbones.vit_dinov3',
-        'models.necks.simple_fpn',
-        'models.datasets.star',
+        'models.backbones.dinov3_wrapper',
+        'models.necks.simple_feature_pyramid',
+        'models.datasets.dior',
+        'models.pipelines.albu_metadata',
     ],
     allow_failed_imports=False,
 )
 
-# -------------------------- Backbone: DINOv3 ViT-B --------------------------
-# DINOv3 ViT-Base with patch_size=16, embed_dim=768, depth=12
-# Extract features from blocks [3, 5, 7, 11] for multi-scale representation
-# Freeze first 8 transformer blocks to preserve pretrained features
 model = dict(
     type='OrientedRCNN',
+    # -------------------------- Backbone: DINOv3 ViT-B/16 -----------------------
+    # Output ONLY the last block -> single stride-16 feature for SimpleFPN.
+    # use_layernorm=False: get_intermediate_layers(norm=True) already applies the
+    # ViT final norm; SimpleFeaturePyramid has its own LayerNorm2d stems.
     backbone=dict(
-        type='ViTDinoV3',
-        model_name='vit_base_patch16_dinov3',
-        pretrained=False,  # Set False when using local checkpoint
-        checkpoint_path='/mnt/ht2-nas2/EO_test/weights/Dinov3_pretrained/DINOv3 ViT LVD-1689M/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
-        out_indices=(3, 5, 7, 11),
-        out_channels=256,
-        frozen_stages=-1,
-        with_cp=False,
-        norm_cfg=dict(type='LN', eps=1e-6),
-        img_size=1024,
-        init_cfg=None,
+        type='DinoVisionTransformerBackbone',
+        model_name='dinov3_vitb16',
+        pretrained=False,
+        layers_to_use=[11],
+        out_indices=(0,),
+        use_layernorm=False,
+        frozen_stages=0,
+        init_cfg=dict(
+            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
+        ),
     ),
 
-    # -------------------------- Neck: SimpleFPN --------------------------
-    # Converts same-resolution ViT features into multi-scale pyramid
-    # Input:  4 features at stride 16 (50x50 for 800x800 images)
-    # Output: 4 features at strides [8, 16, 32, 64]
+    # -------------------------- Neck: ViTDet SimpleFeaturePyramid --------------
+    # Single stride-16 input -> [stride 4, 8, 16, 32] via deconv/conv + LN + GELU.
     neck=dict(
-        type='SimpleFPN',
-        in_channels=256,
+        type='SimpleFeaturePyramid',
+        in_channels=768,
         out_channels=256,
         num_outs=4,
-        start_level=0,
-        add_extra_convs=False,
-        norm_cfg=dict(type='GN', num_groups=32, requires_grad=True),
-        act_cfg=dict(type='GELU'),
+        in_stride=16,
     ),
 
-    # -------------------------- RPN Head --------------------------
-    # Oriented RPN generates rotated region proposals
+    # -------------------------- RPN Head -----------------------------------------
     rpn_head=dict(
         type='OrientedRPNHead',
         in_channels=256,
@@ -73,7 +86,7 @@ model = dict(
             type='AnchorGenerator',
             scales=[8],
             ratios=[0.5, 1.0, 2.0],
-            strides=[8, 16, 32, 64],
+            strides=[4, 8, 16, 32],
         ),
         bbox_coder=dict(
             type='MidpointOffsetCoder',
@@ -93,26 +106,26 @@ model = dict(
         ),
     ),
 
-    # -------------------------- ROI Head --------------------------
+    # -------------------------- ROI Head -----------------------------------------
     roi_head=dict(
         type='OrientedStandardRoIHead',
         bbox_roi_extractor=dict(
             type='RotatedSingleRoIExtractor',
             roi_layer=dict(
                 type='RoIAlignRotated',
-                out_size=7,
+                out_size=14,
                 sample_num=2,
                 clockwise=True,
             ),
             out_channels=256,
-            featmap_strides=[8, 16, 32, 64],
+            featmap_strides=[4, 8, 16, 32],
         ),
         bbox_head=dict(
             type='RotatedShared2FCBBoxHead',
             in_channels=256,
             fc_out_channels=1024,
-            roi_feat_size=7,
-            num_classes=25,  # Star-1021+Extend3 has 25 classes
+            roi_feat_size=14,
+            num_classes=20,
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
                 angle_range='le90',
@@ -124,6 +137,7 @@ model = dict(
                 type='CrossEntropyLoss',
                 use_sigmoid=False,
                 loss_weight=1.0,
+                label_smoothing=0.1,
             ),
             loss_bbox=dict(
                 type='SmoothL1Loss',
@@ -133,7 +147,7 @@ model = dict(
         ),
     ),
 
-    # -------------------------- Training Config --------------------------
+    # -------------------------- Training Config ----------------------------------
     train_cfg=dict(
         rpn=dict(
             assigner=dict(
@@ -185,7 +199,7 @@ model = dict(
         ),
     ),
 
-    # -------------------------- Testing Config --------------------------
+    # -------------------------- Testing Config -----------------------------------
     test_cfg=dict(
         rpn=dict(
             nms_pre=2000,
@@ -197,7 +211,7 @@ model = dict(
             nms_pre=2000,
             min_bbox_size=0,
             score_thr=0.05,
-            nms=dict(type='nms', iou_thr=0.1),
+            nms=dict(type='nms', iou_thr=0.5),
             max_per_img=2000,
         ),
     ),
@@ -205,9 +219,8 @@ model = dict(
 
 # ========================== Dataset Configuration ==========================
 
-# Star-1021+Extend3 dataset with 25 remote sensing object categories
-dataset_type = 'StarDataset'
-data_root = '/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/star-1021_1016+extend3/'
+dataset_type = 'DIORDataset'
+data_root = 'data/DIOR-R/'
 
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53],
@@ -215,19 +228,31 @@ img_norm_cfg = dict(
     to_rgb=True,
 )
 
-# Image size (resize to 800x800)
 image_size = (800, 800)
 
-# -------------------------- Training Pipeline --------------------------
+# Mild multi-scale (kept — it is a generalization aid, unlike the color jitter).
+train_scales = [(700, 700), (800, 800), (900, 900)]
+
 train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True),
-    dict(type='RResize', img_scale=image_size),
+    dict(
+        type='RResize',
+        img_scale=train_scales,
+        multiscale_mode='value',
+    ),
     dict(
         type='RRandomFlip',
-        flip_ratio=[0.25, 0.25, 0.25],
-        direction=['horizontal', 'vertical', 'diagonal'],
+        flip_ratio=[0.5, 0.5],
+        direction=['horizontal', 'vertical'],
         version='le90',
+    ),
+    dict(
+        type='PhotoMetricDistortion',
+        brightness_delta=32,
+        contrast_range=(0.5, 1.5),
+        saturation_range=(0.5, 1.5),
+        hue_delta=18,
     ),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='Pad', size_divisor=32),
@@ -243,7 +268,6 @@ train_pipeline = [
     ),
 ]
 
-# -------------------------- Testing Pipeline --------------------------
 test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(
@@ -269,7 +293,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=16,
+    samples_per_gpu=8,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
@@ -294,28 +318,28 @@ data = dict(
     ),
 )
 
-# ========================== Evaluation Configuration ==========================
 evaluation = dict(
-    interval=5,  # Evaluate every N epochs
-    metric='mAP_coco',  # mAP@50:95 + mAP@0.50, mAP@0.55, ..., mAP@0.95
-    # Alternative metrics:
-    #   'mAP'       - single IoU threshold (default 0.5)
-    #   'mAP_multi' - mAP@0.50 + mAP@0.75
-    save_best='mAP@50:95',
+    interval=3,
+    metric='mAP',
+    save_best='mAP@0.50',
     rule='greater',
-    gpu_collect=True,  # Use GPU all_gather instead of file-based collect (avoids NFS race conditions)
+    gpu_collect=True,
 )
 
-# ========================== Optimization Configuration ==========================
-# Optimizer: AdamW with layer-wise learning rate decay
-# Lower lr for pretrained backbone, higher lr for randomly initialized heads
+# ========================== Optimization ==========================
+
 optimizer = dict(
     type='AdamW',
     lr=1e-4,
     betas=(0.9, 0.999),
     weight_decay=0.05,
     paramwise_cfg=dict(
-        custom_keys={},
+        custom_keys={
+            'backbone.backbone': dict(lr_mult=0.25),
+            'backbone.layer_norms': dict(lr_mult=1.0),
+        },
+        norm_decay_mult=0.0,
+        bias_decay_mult=0.0,
     ),
 )
 
@@ -323,21 +347,20 @@ optimizer_config = dict(
     grad_clip=dict(max_norm=35, norm_type=2),
 )
 
-# Learning rate schedule: Cosine annealing with linear warmup
 lr_config = dict(
     policy='CosineAnnealing',
     warmup='linear',
-    warmup_iters=150,
+    warmup_iters=500,
     warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3,
 )
 
-runner = dict(type='EpochBasedRunner', max_epochs=200)
+runner = dict(type='EpochBasedRunner', max_epochs=120)
 
-# ========================== Runtime Configuration ==========================
+# ========================== Runtime ==========================
+
 checkpoint_config = dict(interval=5, max_keep_ckpts=3)
 
-# Logging
 log_config = dict(
     interval=10,
     hooks=[
@@ -345,23 +368,20 @@ log_config = dict(
     ],
 )
 
-# Mixed precision training
+custom_hooks = [
+    dict(type='EMAHook', momentum=0.9998, priority='ABOVE_NORMAL'),
+]
+
 fp16 = dict(loss_scale=512.0)
 
-# Distributed training
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 load_from = None
 resume_from = None
 workflow = [('train', 1)]
 
-# Device configuration
 device = 'cuda'
 gpu_ids = range(1)
 
-# OpenCV config
 opencv_num_threads = 0
 mp_start_method = 'spawn'
-
-# ========================== Custom Hooks ==========================
-custom_hooks = []

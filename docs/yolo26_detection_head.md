@@ -2,7 +2,7 @@
 
 ## 概述
 
-本项目将 YOLO26 的目标检测头适配到 DIOR-R 旋转框目标检测任务中，结合 DINOv3 骨干网络和 SimpleFPN 特征金字塔，构建一个端到端的旋转目标检测器。
+本项目将 YOLO26 的目标检测头适配到 DIOR-R 旋转框目标检测任务中，结合 DINOv3 骨干网络和 ViTDetFPN 特征金字塔，构建一个端到端的旋转目标检测器。
 
 ## 模型架构
 
@@ -10,19 +10,20 @@
 输入图像 (800×800)
     │
     ▼
-DINOv3 ViT-Base 骨干网络
+DINOv3 ViT-Base 骨干网络 (官方 dinov3_vitb16 封装)
   - patch_size=16, embed_dim=768, depth=12
-  - 冻结前 8 层，保留预训练特征
-  - 输出特征索引: [3, 5, 7, 11]
+  - frozen_stages=0：全参数微调（非冻结前 8 层）
+  - 输出特征索引: [3, 5, 8, 11]
   - 所有输出分辨率: stride=16 (50×50)
     │
     ▼
-SimpleFPN 特征金字塔
-  - 将同分辨率ViT特征转换为多尺度金字塔
-  - P0: stride=8  (100×100) - 上采样
-  - P1: stride=16 (50×50)   - 直通
-  - P2: stride=32 (25×25)   - 下采样
-  - P3: stride=64 (13×13)   - 下采样
+ViTDetFPN 特征金字塔
+  - 将同分辨率ViT特征融合为多尺度金字塔
+  - P0: stride=4  (200×200) - 上采样
+  - P1: stride=8  (100×100) - 上采样
+  - P2: stride=16 (50×50)   - 直通
+  - P3: stride=32 (25×25)   - 下采样
+  - 含 SE 通道注意力 + top-down 融合
     │
     ▼
 YOLO26RotatedHead 检测头
@@ -101,7 +102,8 @@ alignment = cls_score^α × IoU^β
 models/
 ├── __init__.py                          # 注册所有模型模块
 ├── backbones/
-│   └── vit_dinov3.py                    # DINOv3 ViT 骨干网络
+│   ├── dinov3_wrapper.py                # 官方 DINOv3 封装（YOLO26 配置使用）
+│   └── vit_dinov3.py                    # timm 版 DINOv3 骨干
 ├── datasets/
 │   └── dior.py                          # DIOR-R 数据集加载器
 ├── detectors/
@@ -110,9 +112,9 @@ models/
 ├── heads/
 │   ├── __init__.py
 │   └── yolo26_rotated_head.py          # YOLO26 旋转检测头
-├── hooks.py                             # 自定义训练钩子
+├── hooks.py                             # 自定义训练钩子（ProgressiveLossHook）
 ├── necks/
-│   └── simple_fpn.py                    # SimpleFPN 特征金字塔
+│   └── vitdet_fpn.py                    # ViTDetFPN 特征金字塔（YOLO26 配置使用）
 configs/
 └── yolo26/
     └── yolo26_dinov3_fpn_dior.py        # DIOR-R 训练配置

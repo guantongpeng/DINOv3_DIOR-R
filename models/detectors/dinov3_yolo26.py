@@ -3,7 +3,7 @@
 
 This detector combines:
     - DINOv3 ViT backbone (pretrained self-supervised features)
-    - SimpleFPN neck (multi-scale feature pyramid for ViT features)
+    - A ViT-compatible neck (ViTDetFPN by default, SimpleFPN also supported)
     - YOLO26RotatedHead (anchor-free rotated detection with NMS-free inference)
 
 It is designed for oriented object detection on remote sensing datasets
@@ -25,18 +25,18 @@ class DINOv3YOLO26(RotatedBaseDetector):
     """DINOv3 + YOLO26 single-stage rotated object detector.
 
     Architecture:
-        Image → DINOv3 ViT Backbone → SimpleFPN Neck → YOLO26RotatedHead → Detections
+        Image → DINOv3 ViT Backbone → ViT Neck (ViTDetFPN/SimpleFPN) → YOLO26RotatedHead → Detections
 
     Key features:
         - DINOv3 provides powerful self-supervised features
-        - SimpleFPN builds multi-scale pyramid from ViT features
+        - The neck builds a multi-scale pyramid from (same-resolution) ViT features
         - YOLO26Head provides NMS-free end-to-end rotated detection
         - Dual-head training (O2M + O2O) with progressive loss shifting
         - Anchor-free design, no manual anchor tuning needed
 
     Args:
         backbone (dict): DINOv3 ViT backbone config.
-        neck (dict): SimpleFPN neck config.
+        neck (dict): Neck config (e.g. ViTDetFPN or SimpleFPN).
         bbox_head (dict): YOLO26RotatedHead config.
         train_cfg (dict, optional): Training configuration.
         test_cfg (dict, optional): Testing configuration.
@@ -66,7 +66,7 @@ class DINOv3YOLO26(RotatedBaseDetector):
         # Build backbone (DINOv3 ViT)
         self.backbone = build_backbone(backbone)
 
-        # Build neck (SimpleFPN)
+        # Build neck (ViTDetFPN / SimpleFPN — whichever the config specifies)
         if neck is not None:
             self.neck = build_neck(neck)
 

@@ -340,6 +340,14 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             self.obj_convs.append(convs)
             self.conv_obj.append(nn.Conv2d(self.feat_channels, 1, 1))
 
+        # Per-level learnable scale for regression (FCOS convention).
+        # Without this, exp(~0) ≈ 1 pixel at every level, so the network
+        # cannot produce large-enough distances for bigger objects on
+        # coarse feature maps.  Scale is initialised to 1.0 and learned.
+        self.reg_scales = nn.ModuleList(
+            [Scale(1.0) for _ in range(num_levels)]
+        )
+
     def init_weights(self):
         """Initialize weights of the head."""
         if self.init_cfg is not None:
@@ -390,6 +398,7 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             for conv in self.o2o_reg_convs:
                 reg_feat = conv(reg_feat)
             bbox_pred = self.o2o_conv_reg(reg_feat)
+            bbox_pred = self.reg_scales[level_idx](bbox_pred).float()
 
             angle_feat = x
             for conv in self.o2o_angle_convs:
@@ -411,6 +420,7 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             for conv in self.reg_convs[level_idx]:
                 reg_feat = conv(reg_feat)
             bbox_pred = self.conv_reg[level_idx](reg_feat)
+            bbox_pred = self.reg_scales[level_idx](bbox_pred).float()
 
             angle_feat = x
             for conv in self.angle_convs[level_idx]:
@@ -828,10 +838,19 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         alpha: float,
         beta: float,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """One-to-Many assignment using Task-Aligned Label Assignment.
+        """One-to-Many assignment using center-prior + Task-Aligned metric.
 
-        Alignment metric: align = cls_score^α * iou^β
-        Select top-K anchors per GT, then resolve conflicts.
+        Two-stage strategy (FCOS/TAL hybrid):
+          1. Center prior — restrict candidates to grid points that fall
+             inside (or near the center of) each GT box.  This guarantees
+             meaningful positive samples from epoch 0, regardless of the
+             quality of the model's initial predictions.
+          2. Among the candidates, rank by alignment = cls^alpha * iou^beta
+             and keep top-K.
+
+        If a GT box is so small that no grid point falls inside it, fall
+        back to the single nearest grid point to the GT centre so that
+        every object receives at least one positive sample.
 
         Args:
             cls_score: Class scores (N_all, nc) after sigmoid.
@@ -851,8 +870,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         num_gt = len(gt_labels)
         device = cls_score.device
 
-        # Initialize with background
-        assigned_label = torch.full((N_all,), self.num_classes, dtype=torch.long, device=device)
+        assigned_label = torch.full(
+            (N_all,), self.num_classes, dtype=torch.long, device=device
+        )
         assigned_bbox = torch.zeros((N_all, 5), device=device)
         assigned_angle = torch.zeros((N_all, 1), device=device)
         assigned_score = torch.zeros((N_all,), device=device)
@@ -860,34 +880,31 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         if num_gt == 0:
             return assigned_label, assigned_bbox, assigned_angle, assigned_score
 
-        # Compute rotated IoU between predictions and GTs
-        # pred_bboxes: (N_all, 5), gt_bboxes: (num_gt, 5)
-        ious = self._rotated_iou_matrix(pred_bboxes, gt_bboxes)  # (N_all, num_gt)
+        # ---- Step 1: Center-prior mask (N_all, num_gt) ----
+        inside_mask = self._center_prior_mask(points, gt_bboxes)
 
-        # Get classification scores for GT classes
+        # ---- Step 2: Alignment metric among candidates only ----
+        ious = self._rotated_iou_matrix(pred_bboxes, gt_bboxes)  # (N_all, num_gt)
         cls_score_per_gt = cls_score[:, gt_labels]  # (N_all, num_gt)
 
-        # Alignment metric
-        alignment = cls_score_per_gt.pow(alpha) * ious.pow(beta)  # (N_all, num_gt)
+        ious[~inside_mask] = 0.0
+        alignment = cls_score_per_gt.pow(alpha) * ious.pow(beta)
 
-        # Select top-K anchors per GT
-        # For each GT, find the top-K anchors with highest alignment
-        topk_align, topk_indices = torch.topk(alignment, k=min(topk, N_all), dim=0)
-        # topk_indices: (topk, num_gt)
+        # ---- Step 3: Top-K selection per GT ----
+        k = min(topk, N_all)
+        topk_align, topk_indices = torch.topk(alignment, k=k, dim=0)
 
-        # For each anchor, find the best GT (highest alignment)
-        # Build a mask for top-K selections
+        # Build sparse anchor_align and pick best GT per anchor
         anchor_align = torch.zeros((N_all, num_gt), device=device)
-        topk_indices_flat = topk_indices.T.reshape(-1)  # (num_gt * topk,)
-        gt_indices = torch.arange(num_gt, device=device).unsqueeze(0).expand(topk, -1)
-        gt_indices_flat = gt_indices.T.reshape(-1)  # (num_gt * topk,)
+        topk_indices_flat = topk_indices.T.reshape(-1)
+        gt_indices = torch.arange(num_gt, device=device).unsqueeze(0).expand(k, -1)
+        gt_indices_flat = gt_indices.T.reshape(-1)
 
-        anchor_align[topk_indices_flat, gt_indices_flat] = alignment[topk_indices_flat, gt_indices_flat]
+        anchor_align[topk_indices_flat, gt_indices_flat] = \
+            alignment[topk_indices_flat, gt_indices_flat]
 
-        # For each anchor, select the GT with highest alignment
-        max_align, max_gt_idx = anchor_align.max(dim=1)  # (N_all,)
+        max_align, max_gt_idx = anchor_align.max(dim=1)
 
-        # Filter: only assign anchors with alignment > 0
         pos_mask = max_align > 0
         assigned_label[pos_mask] = gt_labels[max_gt_idx[pos_mask]]
         assigned_bbox[pos_mask] = gt_bboxes[max_gt_idx[pos_mask]]
@@ -905,11 +922,13 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         gt_labels: torch.Tensor,
         points: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """One-to-One assignment using Hungarian matching.
+        """One-to-One assignment using center-prior + greedy matching.
 
-        Cost matrix:
-            cost = cls_cost + bbox_cost + angle_cost
-        Use Hungarian algorithm to assign exactly one prediction per GT.
+        Strategy:
+          1. Restrict candidates to grid points inside each GT box.
+          2. Among candidates compute cost = cls_cost + bbox_cost.
+          3. Greedily assign one anchor per GT, resolving conflicts by
+             keeping the lowest-cost match.
 
         Args:
             cls_score: Class scores (N_all, nc) after sigmoid.
@@ -926,7 +945,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         num_gt = len(gt_labels)
         device = cls_score.device
 
-        assigned_label = torch.full((N_all,), self.num_classes, dtype=torch.long, device=device)
+        assigned_label = torch.full(
+            (N_all,), self.num_classes, dtype=torch.long, device=device
+        )
         assigned_bbox = torch.zeros((N_all, 5), device=device)
         assigned_angle = torch.zeros((N_all, 1), device=device)
         assigned_score = torch.zeros((N_all,), device=device)
@@ -934,72 +955,33 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         if num_gt == 0:
             return assigned_label, assigned_bbox, assigned_angle, assigned_score
 
-        # Classification cost: -log(p) for GT class
-        cls_cost = -cls_score[:, gt_labels].log()  # (N_all, num_gt)
+        # ---- Center-prior mask ----
+        inside_mask = self._center_prior_mask(points, gt_bboxes)
 
-        # Bbox cost: 1 - IoU
+        # ---- Cost matrix ----
         ious = self._rotated_iou_matrix(pred_bboxes, gt_bboxes)  # (N_all, num_gt)
-        bbox_cost = 1.0 - ious
 
-        # Angle cost: L1 difference (simplified - use bbox cost as proxy for angle)
-        # Combined cost
+        cls_cost = -cls_score[:, gt_labels].clamp(min=1e-6).log()
+        bbox_cost = 1.0 - ious
         cost = cls_cost + bbox_cost  # (N_all, num_gt)
 
-        # Add a large cost for very distant predictions (beyond 3x box size)
-        # This ensures Hungarian doesn't pick unreasonable matches
+        # Set high cost for points outside GT boxes (bounded cost, no need
+        # for a full reduction — cls_cost ≤ 14, bbox_cost ∈ [0,1])
+        cost[~inside_mask] = 1e4
 
-        # Hungarian matching: select one anchor per GT
-        # For efficiency, only consider top 1000 candidates per GT
-        k = min(max(N_all // num_gt, 1), 1000)
-
-        pos_indices = []
-        gt_indices_remaining = list(range(num_gt))
-        candidates_cost_per_gt = cost[:, gt_indices_remaining]  # (N_all, num_gt)
-
+        # ---- Greedy assignment (one anchor per GT) ----
         for gt_i in range(num_gt):
-            if k is not None:
-                _, topk_idx = torch.topk(cost[:, gt_i], k=k, largest=False)
-            else:
-                topk_idx = torch.arange(N_all, device=device)
+            best_anchor = cost[:, gt_i].argmin().item()
+            # Forbid this anchor for all remaining GTs (one-to-one)
+            cost[best_anchor, :] = float('inf')
 
-            # Find best unmatched anchor for this GT
-            best_anchor = topk_idx[cost[topk_idx, gt_i].argmin()]
-            pos_indices.append(best_anchor)
-
-        # Unique check: if an anchor was selected for multiple GTs, keep the
-        # one with the lowest matching cost (true greedy Hungarian-style).
-        pos_indices = torch.tensor(pos_indices, device=device)  # (num_gt,)
-
-        if len(pos_indices) > 0:
-            # Resolve duplicate anchor assignments: for each unique anchor,
-            # find the GT that has the lowest cost with it.
-            unique_anchors, inverse = torch.unique(
-                pos_indices, return_inverse=True,
+            assigned_label[best_anchor] = gt_labels[gt_i]
+            assigned_bbox[best_anchor] = gt_bboxes[gt_i]
+            assigned_angle[best_anchor] = gt_bboxes[gt_i, 4:5]
+            assigned_score[best_anchor] = (
+                cls_score[best_anchor, gt_labels[gt_i]]
+                * ious[best_anchor, gt_i]
             )
-            # unique_anchors: unique anchor ids
-            # inverse[i]: index into unique_anchors for GT i
-
-            for u_idx, anchor_idx in enumerate(unique_anchors):
-                # All GTs whose best pick is this anchor
-                gt_mask = (inverse == u_idx)
-                candidate_gts = torch.where(gt_mask)[0]
-
-                if len(candidate_gts) > 1:
-                    # Multiple GTs want this anchor — pick the one with
-                    # the lowest combined cost (cls_cost + bbox_cost).
-                    costs_for_anchor = cost[anchor_idx, candidate_gts]
-                    best_gt = candidate_gts[costs_for_anchor.argmin()]
-                else:
-                    best_gt = candidate_gts[0]
-
-                assigned_label[anchor_idx] = gt_labels[best_gt]
-                assigned_bbox[anchor_idx] = gt_bboxes[best_gt]
-                assigned_angle[anchor_idx] = gt_bboxes[best_gt, 4:5]
-                # Quality score = cls * iou
-                assigned_score[anchor_idx] = (
-                    cls_score[anchor_idx, gt_labels[best_gt]]
-                    * ious[anchor_idx, best_gt]
-                )
 
         return assigned_label, assigned_bbox, assigned_angle, assigned_score
 
@@ -1025,6 +1007,85 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             boxes1, boxes2, mode='iou', is_aligned=False
         )
         return ious.to(boxes1.dtype)
+
+    @staticmethod
+    def _points_in_rotated_boxes(
+        points: torch.Tensor,
+        gt_bboxes: torch.Tensor,
+        center_sampling_radius: float = 1.5,
+    ) -> torch.Tensor:
+        """Check which grid points fall inside which rotated GT boxes.
+
+        Uses center-sampling: a point is considered inside if it falls within
+        ``center_sampling_radius`` times the box half-extents.
+
+        Args:
+            points: (N, 2) grid-point coordinates (x, y).
+            gt_bboxes: (M, 5) GT rotated boxes (cx, cy, w, h, angle_le90).
+            center_sampling_radius: Multiplier on half-extents.
+
+        Returns:
+            Boolean mask of shape (N, M).
+        """
+        px = points[:, 0].unsqueeze(1)  # (N, 1)
+        py = points[:, 1].unsqueeze(1)  # (N, 1)
+
+        cx = gt_bboxes[:, 0].unsqueeze(0)  # (1, M)
+        cy = gt_bboxes[:, 1].unsqueeze(0)  # (1, M)
+        w = gt_bboxes[:, 2].unsqueeze(0)   # (1, M)
+        h = gt_bboxes[:, 3].unsqueeze(0)   # (1, M)
+        theta = gt_bboxes[:, 4].unsqueeze(0)  # (1, M)
+
+        dx = px - cx  # (N, M)
+        dy = py - cy  # (N, M)
+
+        cos_t = torch.cos(theta)
+        sin_t = torch.sin(theta)
+
+        dx_local = dx * cos_t + dy * sin_t
+        dy_local = -dx * sin_t + dy * cos_t
+
+        inside = (
+            dx_local.abs() <= (w * 0.5 * center_sampling_radius)
+        ) & (
+            dy_local.abs() <= (h * 0.5 * center_sampling_radius)
+        )
+        return inside
+
+    @staticmethod
+    def _center_prior_mask(
+        points: torch.Tensor,
+        gt_bboxes: torch.Tensor,
+        center_sampling_radius: float = 1.5,
+    ) -> torch.Tensor:
+        """Center-prior mask with vectorized nearest-point fallback.
+
+        Shared by both ``_o2m_match`` and ``_o2o_match`` to avoid drift.
+
+        Guarantees at least one positive per GT: if no grid point falls
+        inside a GT (tiny objects), the single nearest point to the GT
+        centre is selected.
+
+        Args:
+            points: (N, 2) grid-point coordinates.
+            gt_bboxes: (M, 5) GT rotated boxes.
+            center_sampling_radius: Multiplier on half-extents.
+
+        Returns:
+            Boolean mask (N, M) — True where point *i* is eligible for GT *j*.
+        """
+        inside_mask = YOLO26RotatedHead._points_in_rotated_boxes(
+            points, gt_bboxes, center_sampling_radius,
+        )
+
+        empty_cols = ~inside_mask.any(dim=0)  # (M,) — GTs with zero inside points
+        if empty_cols.any():
+            empty_gt_idx = torch.where(empty_cols)[0]
+            dist = torch.cdist(points, gt_bboxes[empty_gt_idx, :2])
+            nearest = dist.argmin(dim=0)
+            inside_mask[nearest, empty_gt_idx] = True
+
+        return inside_mask
 
     @staticmethod
     def _decode_bboxes(

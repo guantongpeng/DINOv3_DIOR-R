@@ -20,7 +20,7 @@ Reference:
 
 import math
 import warnings
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn

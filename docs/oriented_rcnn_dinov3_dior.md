@@ -1,5 +1,13 @@
 # Oriented R-CNN + DINOv3 Backbone for DIOR-R Fine-tuning
 
+> **更新说明 (2026-06)**：本文档最初描述基于 `timm` 的 `ViTDinoV3` 骨干（`out_indices=(3,5,7,11)`、`img_size=1024`）。
+> 当前的 DIOR-R 配置已迁移到 **Meta 官方 DINOv3 封装**（`DinoVisionTransformerBackbone`）：
+> - ViT-B 配置：`dinov3_vitb16`，`layers_to_use=[3,5,8,11]`，`frozen_stages=0`，输入 **800×800**（多尺度 600/800/1000）。
+> - ViT-L 配置：`dinov3_vitl16`，`layers_to_use=[5,11,17,23]`，`frozen_stages=0`，输入 **800×800**。
+>
+> 下文 `img_size=1024`、`out_indices=(3,5,7,11)` 等描述对应历史 timm 配置；以下方当前配置文件为准：
+> `configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py`、`configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py`。
+
 ## 概览 | Overview
 
 本项目基于 [MMRotate](https://github.com/open-mmlab/mmrotate) 框架，使用 **DINOv3** (Meta AI) 作为骨干网络，**Oriented R-CNN** 作为检测头，对 **DIOR-R** 遥感图像数据集进行旋转目标检测微调。
@@ -52,8 +60,7 @@
 mm_dino/
 ├── configs/
 │   └── oriented_rcnn/
-│       ├── oriented_rcnn_dinov3_fpn_dior.py   # DIOR-R 训练配置
-│       └── oriented_rcnn_dinov3_fpn_star.py   # Star-1021+Extend3 训练配置
+│       └── oriented_rcnn_dinov3_fpn_dior.py   # DIOR-R 训练配置
 ├── models/
 │   ├── __init__.py
 │   ├── backbones/
@@ -61,8 +68,7 @@ mm_dino/
 │   │   └── vit_dinov3.py                      # DINOv3 ViT 骨干网络
 │   ├── datasets/
 │   │   ├── __init__.py
-│   │   ├── dior.py                            # DIOR-R 数据集类
-│   │   └── star.py                            # Star-1021+Extend3 数据集类
+│   │   └── dior.py                            # DIOR-R 数据集类
 │   └── necks/
 │       ├── __init__.py
 │       ├── simple_fpn.py                      # SimpleFPN (旧版 neck)
@@ -71,15 +77,12 @@ mm_dino/
 │   ├── train.py                               # 训练脚本
 │   ├── test.py                                # 评估脚本
 │   ├── dist_train.sh                          # 分布式训练脚本 (DIOR-R)
-│   ├── dist_train_star.sh                     # 分布式训练脚本 (Star-1021+Extend3)
 │   ├── dist_test.sh                           # 分布式测试脚本
 │   └── yolo2dota.py                           # YOLO→DOTA 格式转换
 ├── data/
-│   ├── prepare_dior.py                        # DIOR-R 数据集准备
-│   └── prepare_star.py                        # Star-1021+Extend3 数据集准备
+│   └── prepare_dior.py                        # DIOR-R 数据集准备
 └── docs/
-    ├── oriented_rcnn_dinov3_dior.md           # 本文档
-    └── oriented_rcnn_dinov3_star.md           # Star-1021+Extend3 文档
+    └── oriented_rcnn_dinov3_dior.md           # 本文档
 ```
 
 ## 环境要求 | Requirements
@@ -293,9 +296,9 @@ Oriented R-CNN 是专为旋转目标检测设计的二阶段检测器。
 | 学习率 | 1e-4 | 全参数统一（无层级衰减） |
 | 学习率策略 | CosineAnnealing | 余弦退火, min_lr_ratio=1e-3 |
 | Warmup | 500 iter | 线性预热 |
-| 批次大小 | 4/GPU × 4 = 16 | 1024×1024 图像 |
-| 训练轮数 | 36 | 每 3 epoch 评估 |
-| 输入分辨率 | 1024×1024 | 多尺度训练 [800, 1024, 1200] |
+| 批次大小 | 4/GPU × 4 = 16 | 800×800 图像（vitb 配置 samples_per_gpu=16） |
+| 训练轮数 | 300 (vitb/vitl) | 每 3 epoch 评估 |
+| 输入分辨率 | 800×800 | 多尺度训练 [600, 800, 1000] |
 | 数据增强 | RandomFlip + PhotoMetricDistortion | 多尺度 + 色彩抖动 |
 | 测试增强 | 多尺度 [800, 1024] | |
 | 混合精度 | fp16 (loss_scale=512) | 加速训练 |

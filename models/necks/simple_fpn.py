@@ -24,7 +24,7 @@ Reference:
     ViTDet: https://arxiv.org/abs/2203.16527
 """
 
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn

@@ -15,7 +15,7 @@ Reference:
     ViTDet (Li et al., ECCV 2022): Exploring Plain ViT Backbones for Detection
 """
 
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn

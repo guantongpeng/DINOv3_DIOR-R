@@ -4,6 +4,13 @@
 **范围**: 全项目代码审查  
 **项目**: DINOv3 + DIOR-R 旋转目标检测
 
+> **处理状态 (2026-06-16 更新)**：下列绝大多数问题已在代码中修复。逐条状态见各小节标题：
+> - ✅ 已修复：1.1 O2O 匹配、1.2 DIORDataset img_ids、1.3 死代码、1.4 未用常量、2.1 find_unused_parameters、2.2 SimpleFPN extra_downsamples、2.3 ViTDetFPN 未用变量、2.4 解码逻辑去重、4.1/4.3 注释块与 os.cpu_count
+> - ✅ 已修复（本次）：4.2 未用类型导入（`Dict`/`Sequence`）
+> - ⏳ 保留/待确认：3.1 Oriented R-CNN RCNN NMS 类型（见说明）、3.2 timm 私有 API、3.3 monkey-patch 分散（已知权衡）
+>
+> 代码当前状态可作为进一步开发的基础。
+
 ---
 
 ## 1. Bug 修复（高优先级）
@@ -246,23 +253,25 @@ nms=dict(type='nms', iou_thr=0.5),
 
 ## 6. 优化优先级建议
 
-| 优先级 | 条目 | 预期影响 |
-|--------|------|----------|
-| 🔴 P0 | 1.1 O2O 匹配标签错乱 bug | 可能导致 O2O 训练时分类精度异常 |
-| 🔴 P0 | 1.2 DIORDataset img_ids 未初始化 | 测试阶段可能崩溃 |
-| 🟡 P1 | 2.1 DDP find_unused_parameters | 训练速度提升 10-20% |
-| 🟡 P1 | 2.4 解码逻辑去重 | 降低维护成本，减少未来 bug |
-| 🟢 P2 | 1.3/1.4 删除死代码 | 代码整洁 |
-| 🟢 P2 | 2.2/2.3 修复 small issues | 代码健壮性 |
-| 🟢 P2 | 3.1 确认 NMS 类型 | 推理正确性 |
-| ⚪ P3 | 4.1/4.2/4.3 风格清理 | 代码质量 |
+| 优先级 | 条目 | 预期影响 | 状态 |
+|--------|------|----------|------|
+| 🔴 P0 | 1.1 O2O 匹配标签错乱 bug | 可能导致 O2O 训练时分类精度异常 | ✅ 已修复（改为贪心一对一匹配） |
+| 🔴 P0 | 1.2 DIORDataset img_ids 未初始化 | 测试阶段可能崩溃 | ✅ 已修复 |
+| 🟡 P1 | 2.1 DDP find_unused_parameters | 训练速度提升 10-20% | ✅ 已修复（条件判断） |
+| 🟡 P1 | 2.4 解码逻辑去重 | 降低维护成本，减少未来 bug | ✅ 已修复（`_decode_bboxes`） |
+| 🟢 P2 | 1.3/1.4 删除死代码 | 代码整洁 | ✅ 已修复 |
+| 🟢 P2 | 2.2/2.3 修复 small issues | 代码健壮性 | ✅ 已修复 |
+| 🟢 P2 | 3.1 确认 NMS 类型 | 推理正确性 | ⏳ 见下方说明 |
+| ⚪ P3 | 4.1/4.2/4.3 风格清理 | 代码质量 | ✅ 已修复（含 4.2 类型导入） |
 
 ---
 
-## 7. 建议的下步行动
+## 7. 后续行动状态
 
-1. **立即修复** Bug 1.1 和 Bug 1.2
-2. **评估** 是否需要启用 `find_unused_parameters`（检查模型中是否存在不参与梯度计算的参数）
-3. **重构** bbox 解码为独立方法
-4. **清理** 死代码和注释块
-5. **确认** Oriented R-CNN 配置中 RCNN NMS 类型是否正确
+1. ✅ **已修复** Bug 1.1 和 Bug 1.2
+2. ✅ **已修复** `find_unused_parameters`（仅在 `frozen_stages>=0` 或存在 progressive_loss 时启用）
+3. ✅ **已重构** bbox 解码为独立方法 `_decode_bboxes`
+4. ✅ **已清理** 死代码、注释块与未用导入
+5. ⏳ **待确认**：Oriented R-CNN 配置中 `rcnn.nms=dict(type='nms')`。mmrotate 的
+   `OrientedStandardRoIHead` 内部会处理旋转框，现有配置已能正常训练至较高 mAP；如需严格
+   的旋转 NMS 可改试 `nms_rb` / `nms_rotated` 并对比指标，但属可选优化而非缺陷。

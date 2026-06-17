@@ -6,7 +6,7 @@
 # detection on the DIOR-R remote sensing dataset.
 #
 # Model Architecture:
-#   Backbone:  ViT-Base DINOv3 (pretrained, frozen first 8 blocks)
+#   Backbone:  ViT-Base DINOv3 (pretrained, frozen_stages=0 = full fine-tune)
 #   Neck:      ViTDetFPN (proper FPN with SE attention, strides [4,8,16,32])
 #   Head:      YOLO26RotatedHead (anchor-free, dual-head, NMS-free)
 #
@@ -33,6 +33,7 @@ custom_imports = dict(
         'models.datasets.dior',
         'models.heads.yolo26_rotated_head',
         'models.detectors.dinov3_yolo26',
+        'models.pipelines.albu_metadata',
         'models.hooks',
     ],
     allow_failed_imports=False,
@@ -49,7 +50,7 @@ model = dict(
         type='DinoVisionTransformerBackbone',
         model_name='dinov3_vitb16',
         pretrained=False,
-        layers_to_use=[3, 5, 7, 11],  # ViTDetFPN standard: f0=f3, f1=f5, f2=f7, f3=f11
+        layers_to_use=[3, 5, 8, 11],  # Match Oriented R-CNN: blocks 3,5,8,11
         out_indices=(0, 1, 2, 3),
         use_layernorm=True,
         frozen_stages=0,
@@ -134,9 +135,9 @@ model = dict(
                             # overly suppress low-IoU anchors)
 
         # Progressive loss schedule (O2O weight increase)
-        # Epoch:  0-12   → o2o_weight = 0 (O2M only)
-        # Epoch: 12-30   → o2o_weight: 0 → 1.0 (ramp up)
-        # Epoch: 30-36   → o2o_weight = 1.0 (O2M + O2O)
+        # Epoch:   0-60     → o2o_weight = 0 (O2M only)
+        # Epoch:  60-150    → o2o_weight: 0 → 1.0 (ramp up)
+        # Epoch: 150-200    → o2o_weight = 1.0 (O2M + O2O)
         progressive_loss=dict(
             start_epoch=60,
             end_epoch=150,
@@ -170,16 +171,42 @@ img_norm_cfg = dict(
 # Image size for DIOR-R
 image_size = (800, 800)
 
+# Multi-scale training scales (match Oriented R-CNN config)
+train_scales = [(600, 600), (800, 800), (1000, 1000)]
+
 # -------------------------- Training Pipeline --------------------------
 train_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(type='LoadAnnotations', with_bbox=True),
-    dict(type='RResize', img_scale=image_size),
+    dict(
+        type='RResize',
+        img_scale=train_scales,
+        multiscale_mode='value',
+    ),
     dict(
         type='RRandomFlip',
         flip_ratio=[0.25, 0.25, 0.25],
         direction=['horizontal', 'vertical', 'diagonal'],
         version='le90',
+    ),
+    dict(
+        type='AlbuMetadata',
+        transforms=[
+            dict(type='GaussNoise', var_limit=(10.0, 50.0), p=0.3),
+            dict(type='MotionBlur', blur_limit=(3, 7), p=0.2),
+            dict(type='RandomBrightnessContrast',
+                 brightness_limit=0.2, contrast_limit=0.2, p=0.3),
+            dict(type='HueSaturationValue',
+                 hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=10, p=0.3),
+        ],
+        keymap=dict(img='image'),
+    ),
+    dict(
+        type='PhotoMetricDistortion',
+        brightness_delta=48,
+        contrast_range=(0.4, 1.6),
+        saturation_range=(0.4, 1.6),
+        hue_delta=24,
     ),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='Pad', size_divisor=32),
@@ -221,7 +248,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=32,
+    samples_per_gpu=16,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
@@ -250,14 +277,14 @@ data = dict(
 evaluation = dict(
     interval=3,  # Evaluate every N epochs
     metric='mAP',
-    save_best='auto',
+    save_best='mAP@0.50',
     rule='greater',
     gpu_collect=True,
 )
 
 # ========================== Optimization Configuration ==========================
 # Optimizer: AdamW with layer-wise learning rate decay
-# Lower lr for pretrained backbone, higher lr for randomly initialized head
+# Align with Oriented R-CNN config that achieves mAP 0.71 on the same backbone
 optimizer = dict(
     type='AdamW',
     lr=1e-4,
@@ -265,8 +292,11 @@ optimizer = dict(
     weight_decay=0.05,
     paramwise_cfg=dict(
         custom_keys={
-            'backbone': dict(lr_mult=0.1),  # Lower lr for pretrained backbone
+            'backbone.backbone': dict(lr_mult=0.25),  # Higher lr for backbone
+            'backbone.layer_norms': dict(lr_mult=1.0),  # Full lr for adaptation norms
         },
+        norm_decay_mult=0.0,   # No weight decay on norm parameters
+        bias_decay_mult=0.0,   # No weight decay on biases
     ),
 )
 
@@ -320,6 +350,7 @@ mp_start_method = 'spawn'
 # ========================== Custom Hooks ==========================
 # Progressive loss hook: shifts supervision from O2M to O2O
 custom_hooks = [
+    dict(type='EMAHook', momentum=0.999, priority='ABOVE_NORMAL'),
     dict(
         type='ProgressiveLossHook',
         start_epoch=60,

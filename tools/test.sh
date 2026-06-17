@@ -31,10 +31,18 @@
 
 set -e
 
-# -------------------- Configuration --------------------
-CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py'
-CHECKPOINT='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/oriented_rcnn_dinov3_vitb_fpn_dior_20260615_104700/latest.pth'
-WORK_DIR='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/oriented_rcnn_dinov3_vitb_fpn_dior_20260615_104700'
+CONFIG=${CONFIG:-'configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py'}
+WORK_DIR=${WORK_DIR:-'/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/oriented_rcnn_dinov3_vitb_fpn_dior_20260615_104700'}
+
+# Prefer the best-on-val checkpoint (from save_best='mAP@0.50'); fall back to
+# latest.pth if no best checkpoint exists. Override with TEST_CKPT=<path>.
+BEST_CKPT=$(ls -1 "${WORK_DIR}"/best_mAP*.pth 2>/dev/null | head -1)
+if [ -n "${BEST_CKPT}" ]; then
+    DEFAULT_CKPT="${BEST_CKPT}"
+else
+    DEFAULT_CKPT="${WORK_DIR}/latest.pth"
+fi
+CHECKPOINT=${TEST_CKPT:-"${DEFAULT_CKPT}"}
 
 # GPU settings
 NUM_GPUS=${NUM_GPUS:-1}

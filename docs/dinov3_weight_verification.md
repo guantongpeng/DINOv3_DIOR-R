@@ -143,24 +143,13 @@ INFO - DINOv3 backbone loaded with local checkpoint weights: data/dinov3_vitb16_
 | `load_from` | `None` | 正确（无外部覆盖） |
 | `resume_from` | `None` | 正确（从头训练） |
 
-### 4.2 Star 配置 (`oriented_rcnn_dinov3_fpn_star.py`)
+### 4.2 需要避免的潜在陷阱
 
-| 设置项 | 值 | 状态 |
-|--------|----|------|
-| `pretrained` | `False` | 正确（使用本地 checkpoint） |
-| `checkpoint_path` | `/mnt/ht2-nas2/EO_test/...` | 文件存在（327 MB） |
-| `init_cfg` | `None` | 正确（ViT 权重在 `__init__` 中加载） |
-| `frozen_stages` | 未设置（默认-1） | 所有层可训练 |
-| `load_from` | `None` | 正确（无外部覆盖） |
-| `resume_from` | `None` | 正确（从头训练） |
+1. **不要设置 `init_cfg`** — 如果设置了 `init_cfg`（例如 `dict(type='Pretrained', checkpoint=...)`），mmcv 的 `BaseModule.init_weights()` 会覆盖已经加载好的 ViT 权重。配置文件正确地将 `init_cfg` 设为 `None`。
 
-### 4.3 需要避免的潜在陷阱
+2. **不要设置 `load_from`** — mmdet 中的全局 `load_from` 会加载完整的模型 checkpoint（包括主干网络、颈部、检测头）。设置 `load_from` 会覆盖 DINOv3 预训练的主干网络权重。配置文件正确地将 `load_from` 设为 `None`。
 
-1. **不要设置 `init_cfg`** — 如果设置了 `init_cfg`（例如 `dict(type='Pretrained', checkpoint=...)`），mmcv 的 `BaseModule.init_weights()` 会覆盖已经加载好的 ViT 权重。两个配置文件正确地将 `init_cfg` 设为 `None`。
-
-2. **不要设置 `load_from`** — mmdet 中的全局 `load_from` 会加载完整的模型 checkpoint（包括主干网络、颈部、检测头）。设置 `load_from` 会覆盖 DINOv3 预训练的主干网络权重。两个配置文件正确地将 `load_from` 设为 `None`。
-
-3. **不要在设置了 `checkpoint_path` 的同时设置 `pretrained=True`** — 代码已正确处理这种情况（内部自动将 `pretrained` 设为 `False`），但同时设置两者会造成困惑。两个配置文件正确地将 `pretrained` 设为 `False`。
+3. **不要在设置了 `checkpoint_path` 的同时设置 `pretrained=True`** — 代码已正确处理这种情况（内部自动将 `pretrained` 设为 `False`），但同时设置两者会造成困惑。配置文件正确地将 `pretrained` 设为 `False`。
 
 ---
 
