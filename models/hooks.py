@@ -5,6 +5,7 @@ This module provides hooks for the YOLO26 training pipeline, including:
 - ProgressiveLossHook: schedules the O2O head loss weight during training
 """
 
+import torch.nn as nn
 from mmcv.runner import HOOKS, Hook
 
 
@@ -61,3 +62,57 @@ class ProgressiveLossHook(Hook):
                 f'[ProgressiveLoss] Epoch {epoch}: '
                 f'O2O weight = {weight:.3f}'
             )
+
+
+@HOOKS.register_module()
+class RegZeroInitHook(Hook):
+    """Zero-init the RoI bbox regression head (DETR-style stable init).
+
+    PlainDETR (official DINOv3 detection eval) inits the box regression MLP so
+    that the very first regression output is zero — i.e. the predicted box
+    equals the anchor/proposal, which stabilizes early training. This hook
+    applies the equivalent to an MMDetection RotatedShared2FCBBoxHead:
+    the final regression FC (`fc_reg`) gets weight=0, bias=0.
+
+    It runs once at training start (before the first epoch). If the head does
+    not expose `fc_reg`, it logs a warning and does nothing.
+
+    Args:
+        zero_weight (bool): zero the regression FC weight. Default True.
+        zero_bias (bool): zero the regression FC bias. Default True.
+    """
+
+    def __init__(self, zero_weight: bool = True, zero_bias: bool = True, **kwargs):
+        super().__init__(**kwargs)
+        self.zero_weight = zero_weight
+        self.zero_bias = zero_bias
+
+    def before_run(self, runner):
+        model = runner.model
+        if hasattr(model, 'module'):
+            model = model.module
+
+        heads = []
+        # Detect two-stage detector layout: roi_head.bbox_head (single or list).
+        roi = getattr(model, 'roi_head', None)
+        if roi is not None:
+            bh = getattr(roi, 'bbox_head', None)
+            if bh is None:
+                return
+            heads = bh if isinstance(bh, (list, tuple, nn.ModuleList)) else [bh]
+
+        applied = 0
+        for head in heads:
+            fc_reg = getattr(head, 'fc_reg', None)
+            if fc_reg is None:
+                runner.logger.warning(
+                    '[RegZeroInit] bbox_head has no fc_reg; skipping zero-init.')
+                continue
+            if self.zero_weight:
+                nn.init.constant_(fc_reg.weight.data, 0.0)
+            if self.zero_bias and fc_reg.bias is not None:
+                nn.init.constant_(fc_reg.bias.data, 0.0)
+            applied += 1
+        if applied:
+            runner.logger.info(
+                f'[RegZeroInit] zero-initialised regression FC in {applied} bbox_head(s).')
