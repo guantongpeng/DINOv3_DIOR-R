@@ -6,6 +6,8 @@
 # Head:      RVSAHead with VSA Transformer (end-to-end set prediction)
 #
 # Architecture: Backbone -> FPN -> VSA Encoder -> VSA Decoder -> Cls+Reg
+# Matching:    RotatedHungarianAssigner (Focal cls + L1 + rotated IoU cost)
+# Losses:      FocalLoss(cls) + L1(norm) + RotatedIoULoss on le90 boxes
 # =============================================================================
 
 _base_ = []
@@ -16,6 +18,7 @@ custom_imports = dict(
         'models.necks.vitdet_fpn',
         'models.layers.vsa_attention',
         'models.layers.vsa_transformer',
+        'models.layers.rotated_match',
         'models.dense_heads.rvsa_head',
         'models.detectors.rvsa',
         'models.datasets.dior',
@@ -66,13 +69,13 @@ model = dict(
             alpha=0.25,
             loss_weight=2.0),
         loss_bbox=dict(type='L1Loss', loss_weight=5.0),
-        loss_iou=dict(type='GIoULoss', loss_weight=2.0),
+        loss_iou=dict(type='RotatedIoULoss', mode='linear', loss_weight=2.0),
         train_cfg=dict(
             assigner=dict(
-                type='HungarianAssigner',
+                type='RotatedHungarianAssigner',
                 cls_cost=dict(type='FocalLossCost', weight=2.0),
-                reg_cost=dict(type='BBoxL1Cost', weight=5.0),
-                iou_cost=dict(type='IoUCost', iou_mode='giou', weight=2.0))),
+                reg_cost=dict(type='RotatedL1Cost', weight=5.0),
+                iou_cost=dict(type='RotatedIoUCost', weight=2.0))),
         test_cfg=dict(max_per_img=300),
         transformer=dict(
             type='VSATransformer',
@@ -193,7 +196,7 @@ checkpoint_config = dict(interval=5, max_keep_ckpts=3)
 log_config = dict(interval=10, hooks=[dict(type='TextLoggerHook')])
 custom_hooks = [dict(type='EMAHook', momentum=0.999, priority='ABOVE_NORMAL')]
 
-fp16 = dict(loss_scale=512.0)
+fp16 = dict(loss_scale='dynamic')
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 load_from = None

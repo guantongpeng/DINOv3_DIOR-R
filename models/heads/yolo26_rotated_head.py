@@ -352,21 +352,27 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         """Initialize weights of the head."""
         if self.init_cfg is not None:
             super().init_weights()
-            return
+        else:
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    normal_init(m, mean=0, std=0.01)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
 
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                normal_init(m, mean=0, std=0.01)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-        # Bias init for classification (helps with foreground/background balance)
+        # Bias init for classification / objectness branches.
+        # NOTE: this block MUST run after super().init_weights() and must NOT
+        # be skipped by an early return. The init_cfg override only covers the
+        # O2M `conv_cls`; without this the O2O `o2o_conv_cls.bias` stays at 0
+        # (sigmoid=0.5 on every anchor/class), which makes the O2O focal loss
+        # explode (~45000) the moment progressive loss turns on.
         bias_init = bias_init_with_prob(0.01)
         for conv_cls in self.conv_cls:
             nn.init.constant_(conv_cls.bias, bias_init)
 
         if hasattr(self, 'o2o_conv_cls'):
             nn.init.constant_(self.o2o_conv_cls.bias, bias_init)
+        if hasattr(self, 'o2o_conv_obj'):
+            nn.init.constant_(self.o2o_conv_obj.bias, bias_init)
 
     def _forward_per_level(
         self,
@@ -1169,7 +1175,7 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         )
 
         # Use O2O branch if available for NMS-free inference
-        use_end2end = cfg.get('end2end', True) if cfg else True
+        use_end2end = cfg.get('end2end', False) if cfg else False
         nms_cfg = cfg.get('nms', dict(type='nms_rotated', iou_thr=0.1)) if cfg else None
         score_thr = cfg.get('score_thr', 0.05) if cfg else 0.05
         max_per_img = cfg.get('max_per_img', 300) if cfg else 300

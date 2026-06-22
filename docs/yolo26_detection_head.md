@@ -4,6 +4,8 @@
 
 本项目将 YOLO26 的目标检测头适配到 DIOR-R 旋转框目标检测任务中，结合 DINOv3 骨干网络和 ViTDetFPN 特征金字塔，构建一个端到端的旋转目标检测器。
 
+> 排查与修复记录见 [YOLO26 训练效果差的排查与修复](./yolo26_bugfix_inference_o2o.md)（NMS 推理 / O2O 初始化爆炸 / O2O 分支未启用 三个 Bug）。
+
 ## 模型架构
 
 ```

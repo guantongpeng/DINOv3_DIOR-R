@@ -43,8 +43,13 @@ class RVSADetector(RotatedBaseDetector):
 
         if bbox_head is not None:
             from mmrotate.models.builder import build_head
-            bbox_head.update(train_cfg=train_cfg)
-            bbox_head.update(test_cfg=test_cfg)
+            # Only inject detector-level train/test cfg when provided, so that
+            # configs that place train_cfg/test_cfg inside bbox_head are not
+            # clobbered with None.
+            if train_cfg is not None:
+                bbox_head.update(train_cfg=train_cfg)
+            if test_cfg is not None:
+                bbox_head.update(test_cfg=test_cfg)
             self.bbox_head = build_head(bbox_head)
         else:
             self.bbox_head = None

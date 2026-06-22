@@ -31,8 +31,8 @@
 
 set -e
 
-CONFIG=${CONFIG:-'configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py'}
-WORK_DIR=${WORK_DIR:-'/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/oriented_rcnn_dinov3_vitb_fpn_dior_20260615_104700'}
+CONFIG=${CONFIG:-'/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/yolo26_dinov3_fpn_dior_bugfix/yolo26_dinov3_fpn_dior.py'}
+WORK_DIR=${WORK_DIR:-'/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/yolo26_dinov3_fpn_dior_bugfix/'}
 
 # Prefer the best-on-val checkpoint (from save_best='mAP@0.50'); fall back to
 # latest.pth if no best checkpoint exists. Override with TEST_CKPT=<path>.
@@ -47,7 +47,7 @@ CHECKPOINT=${TEST_CKPT:-"${DEFAULT_CKPT}"}
 # GPU settings
 NUM_GPUS=${NUM_GPUS:-1}
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-MASTER_PORT=${MASTER_PORT:-29510}
+# MASTER_PORT is resolved below (auto-picked when unset, verified when set).
 
 # Result saving
 RESULT_FILE=${RESULT_FILE:-"${WORK_DIR}/test_results.txt"}  # Metrics output txt
@@ -60,6 +60,46 @@ VIS_DIR=${VIS_DIR:-"${WORK_DIR}/vis_test_results"}  # Output dir for visualized 
 
 # Python
 MMDET_PYTHON="/root/miniconda3/envs/mmdet/bin/python"
+
+# -------------------- Master Port Resolution --------------------
+# Auto-select a free master port when MASTER_PORT is unset; verify it is free
+# when explicitly provided (avoids cryptic torch EADDRINUSE crashes).
+_port_is_free() {
+    "${MMDET_PYTHON}" - "$1" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(("", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+sys.exit(0)
+PY
+}
+
+_find_free_port() {
+    "${MMDET_PYTHON}" - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind(("", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+if [ -z "${MASTER_PORT+x}" ]; then
+    MASTER_PORT=$(_find_free_port)
+    echo "Auto-selected free MASTER_PORT=${MASTER_PORT}"
+else
+    if ! _port_is_free "${MASTER_PORT}"; then
+        echo "ERROR: MASTER_PORT=${MASTER_PORT} is already in use (likely another distributed job)."
+        FREE_PORT=$(_find_free_port)
+        echo "       A free port is: ${FREE_PORT}"
+        echo "       Re-run with: MASTER_PORT=${FREE_PORT} bash tools/test.sh"
+        exit 1
+    fi
+fi
 
 # Environment
 export OMP_NUM_THREADS=1

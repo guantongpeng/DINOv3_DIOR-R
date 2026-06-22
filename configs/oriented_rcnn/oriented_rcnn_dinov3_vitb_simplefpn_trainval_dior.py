@@ -1,24 +1,29 @@
 # =============================================================================
-# Oriented R-CNN with DINOv3 Backbone for DIOR-R Dataset (v2 — optimized)
+# Oriented R-CNN + DINOv3 ViT-B/16 for DIOR-R  (TRAINVAL — final submission)
 # =============================================================================
-# Backbone: Meta official DINOv3 ViT-L/16 (imported from dinov3 repo)
-# Neck: ViTDetFPN (proper FPN for ViT features)
-# Head: Oriented R-CNN (rotated detection)
+# Goal: maximize test-set mAP by training on the FULL trainval pool and
+# using the official test split for validation / model selection.
 #
-# v2 improvements (2026-06-15):
-#   1. RCNN NMS iou_thr: 0.1 → 0.5 (fixed overly aggressive suppression)
-#   2. RoI feat size: 7×7 → 14×14 (better small object detection)
-#   3. Label Smoothing: 0.1 (reduces overfitting)
-#   4. Class-balanced weights: rare classes (dam, trainstation) weighted higher
-#   5. Stronger augmentation: Albu (noise, blur, color jitter, CLAHE)
-#      + more aggressive PhotoMetricDistortion
+# Data strategy (this config):
+#   * train = DIOR-R train + val  (merged via ConcatDataset, ~11.7k images)
+#     -> ~2x more supervision than training on train alone.
+#   * val   = DIOR-R test split   (used for periodic eval + save_best model
+#     selection during training).
+#   * test  = DIOR-R test split   (used by tools/test.py for the final number).
+#   Because the held-out test set is never touched by the optimizer, there is
+#   no leakage; we simply report/select on it.
 #
-# Baseline config:
-#   1. img_size=800 (DIOR images are ~800×800)
-#   2. 300-epoch training with cosine annealing
-#   3. EMA for smoother convergence
-#   4. Multi-scale training [600, 800, 1000]
-#   5. Frozen stages=0: all backbone params trained
+# Model = proven ViTDet recipe (SimpleFeaturePyramid on the last ViT block) +
+#         Oriented R-CNN head. Inherits the clean-augmentation choices from the
+#         held-out-val config (oriented_rcnn_dinov3_vitb_simplefpn_dior.py):
+#           - backbone outputs ONLY the last block (layers_to_use=[11])
+#           - single mild PhotoMetricDistortion, no double color jitter
+#           - uniform CE (no hand-tuned class weights)
+#           - EMA (momentum 0.9998) + cosine annealing
+#
+# Schedule note: trainval has ~2x the images of train-only, so each epoch is
+# ~2x longer. The 120-epoch cosine schedule is kept (more data => less
+# overfitting risk, so we keep the full schedule rather than halving epochs).
 # =============================================================================
 
 _base_ = []
@@ -28,7 +33,7 @@ _base_ = []
 custom_imports = dict(
     imports=[
         'models.backbones.dinov3_wrapper',
-        'models.necks.vitdet_fpn',
+        'models.necks.simple_feature_pyramid',
         'models.datasets.dior',
         'models.pipelines.albu_metadata',
     ],
@@ -37,38 +42,34 @@ custom_imports = dict(
 
 model = dict(
     type='OrientedRCNN',
-    # -------------------------- Backbone: DINOv3 ViT-B/16 ------------------------
-    # Official Meta DINOv3 ViT-Base imported from the dinov3 repository.
-    # Outputs 4 feature maps at embed_dim=768, stride=16.
-    # frozen_stages=0 means ALL backbone params are trained (critical for mAP!).
+    # -------------------------- Backbone: DINOv3 ViT-B/16 -----------------------
+    # Output ONLY the last block -> single stride-16 feature for SimpleFPN.
+    # use_layernorm=False: get_intermediate_layers(norm=True) already applies the
+    # ViT final norm; SimpleFeaturePyramid has its own LayerNorm2d stems.
     backbone=dict(
         type='DinoVisionTransformerBackbone',
-        model_name='dinov3_vitl16',
+        model_name='dinov3_vitb16',
         pretrained=False,
-        layers_to_use=[5, 11, 17, 23],
-        out_indices=(0, 1, 2, 3),
-        use_layernorm=True,
+        layers_to_use=[11],
+        out_indices=(0,),
+        use_layernorm=False,
         frozen_stages=0,
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth',
+            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
         ),
     ),
 
-    # -------------------------- Neck: ViTDetFPN ----------------------------------
-    # in_channels=1024 matches ViT-L embed_dim.
+    # -------------------------- Neck: ViTDet SimpleFeaturePyramid --------------
+    # Single stride-16 input -> [stride 4, 8, 16, 32] via deconv/conv + LN + GELU.
     neck=dict(
-        type='ViTDetFPN',
-        in_channels=1024,
+        type='SimpleFeaturePyramid',
+        in_channels=768,
         out_channels=256,
         num_outs=4,
-        start_level=0,
-        add_extra_convs=False,
-        se_reduction=16,
-        norm_cfg=dict(type='GN', num_groups=32, requires_grad=True),
-        act_cfg=dict(type='GELU'),
+        in_stride=16,
     ),
 
-    # -------------------------- RPN Head -----------------------------------------
+    # -------------------------- RPN Head (Oriented R-CNN) ----------------------
     rpn_head=dict(
         type='OrientedRPNHead',
         in_channels=256,
@@ -98,10 +99,7 @@ model = dict(
         ),
     ),
 
-    # -------------------------- ROI Head -----------------------------------------
-    # roi_feat_size=14 for better small object detection.
-    # class_weight uses inverse-sqrt frequency: rare classes (dam, trainstation)
-    # get higher weight, common classes (ship, vehicle) get lower weight.
+    # -------------------------- ROI Head (Oriented R-CNN) ----------------------
     roi_head=dict(
         type='OrientedStandardRoIHead',
         bbox_roi_extractor=dict(
@@ -133,29 +131,6 @@ model = dict(
                 use_sigmoid=False,
                 loss_weight=1.0,
                 label_smoothing=0.1,
-                class_weight=[
-                    1.00,  # background
-                    0.25,  # airplane        (8212 gt)
-                    0.88,  # airport         (666  gt) — rare
-                    0.39,  # baseballfield   (3434 gt)
-                    0.49,  # basketballcourt (2146 gt)
-                    0.44,  # bridge          (2584 gt)
-                    0.70,  # chimney         (1031 gt)
-                    0.97,  # dam             (538  gt) — rarest
-                    0.69,  # ESA             (1085 gt)
-                    0.86,  # ETS             (688  gt) — rare
-                    0.94,  # golffield       (575  gt) — rare
-                    0.52,  # groundtrackfield(1885 gt)
-                    0.41,  # harbor          (3102 gt)
-                    0.54,  # overpass        (1778 gt)
-                    0.12,  # ship            (35183 gt) — most common
-                    0.87,  # stadium         (672  gt) — rare
-                    0.15,  # storagetank     (23361 gt)
-                    0.26,  # tenniscourt     (7343 gt)
-                    1.00,  # trainstation    (509  gt) — rarest
-                    0.14,  # vehicle         (26601 gt)
-                    0.41,  # windmill        (2998 gt)
-                ],
             ),
             loss_bbox=dict(
                 type='SmoothL1Loss',
@@ -246,11 +221,10 @@ img_norm_cfg = dict(
     to_rgb=True,
 )
 
-# DIOR images are ~800×800 — no need for 1024 upscale
 image_size = (800, 800)
 
-# Multi-scale training scales (centered around 800)
-train_scales = [(600, 600), (800, 800), (1000, 1000)]
+# Mild multi-scale (a generalization aid, unlike heavy color jitter).
+train_scales = [(700, 700), (800, 800), (900, 900)]
 
 train_pipeline = [
     dict(type='LoadImageFromFile'),
@@ -262,28 +236,16 @@ train_pipeline = [
     ),
     dict(
         type='RRandomFlip',
-        flip_ratio=[0.25, 0.25, 0.25],
-        direction=['horizontal', 'vertical', 'diagonal'],
+        flip_ratio=[0.5, 0.5],
+        direction=['horizontal', 'vertical'],
         version='le90',
     ),
     dict(
-        type='AlbuMetadata',
-        transforms=[
-            dict(type='GaussNoise', var_limit=(10.0, 50.0), p=0.3),
-            dict(type='MotionBlur', blur_limit=(3, 7), p=0.2),
-            dict(type='RandomBrightnessContrast',
-                 brightness_limit=0.2, contrast_limit=0.2, p=0.3),
-            dict(type='HueSaturationValue',
-                 hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=10, p=0.3),
-        ],
-        keymap=dict(img='image'),
-    ),
-    dict(
         type='PhotoMetricDistortion',
-        brightness_delta=48,
-        contrast_range=(0.4, 1.6),
-        saturation_range=(0.4, 1.6),
-        hue_delta=24,
+        brightness_delta=32,
+        contrast_range=(0.5, 1.5),
+        saturation_range=(0.5, 1.5),
+        hue_delta=18,
     ),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='Pad', size_divisor=32),
@@ -299,7 +261,6 @@ train_pipeline = [
     ),
 ]
 
-# Test pipeline (single-scale, no flip for safe evaluation)
 test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(
@@ -325,22 +286,31 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=4,
+    samples_per_gpu=8,
     workers_per_gpu=4,
+    # ---- train: DIOR-R train + val merged (ConcatDataset via list args) ----
     train=dict(
         type=dataset_type,
-        ann_file=data_root + 'train/labelTxt/',
-        img_prefix=data_root + 'train/images/',
+        ann_file=[
+            data_root + 'train/labelTxt/',
+            data_root + 'val/labelTxt/',
+        ],
+        img_prefix=[
+            data_root + 'train/images/',
+            data_root + 'val/images/',
+        ],
         pipeline=train_pipeline,
         version='le90',
     ),
+    # ---- val: DIOR-R test split, used for periodic eval + save_best ----
     val=dict(
         type=dataset_type,
-        ann_file=data_root + 'val/labelTxt/',
-        img_prefix=data_root + 'val/images/',
+        ann_file=data_root + 'test/labelTxt/',
+        img_prefix=data_root + 'test/images/',
         pipeline=test_pipeline,
         version='le90',
     ),
+    # ---- test: DIOR-R test split, used by tools/test.py for final eval ----
     test=dict(
         type=dataset_type,
         ann_file=data_root + 'test/labelTxt/',
@@ -350,6 +320,7 @@ data = dict(
     ),
 )
 
+# Evaluate on the test split every 3 epochs and keep the best-by-mAP checkpoint.
 evaluation = dict(
     interval=3,
     metric='mAP',
@@ -387,7 +358,7 @@ lr_config = dict(
     min_lr_ratio=1e-3,
 )
 
-runner = dict(type='EpochBasedRunner', max_epochs=300)
+runner = dict(type='EpochBasedRunner', max_epochs=120)
 
 # ========================== Runtime ==========================
 
@@ -400,9 +371,8 @@ log_config = dict(
     ],
 )
 
-# Exponential Moving Average for smoother convergence (~+0.5-1.0 mAP)
 custom_hooks = [
-    dict(type='EMAHook', momentum=0.999, priority='ABOVE_NORMAL'),
+    dict(type='EMAHook', momentum=0.9998, priority='ABOVE_NORMAL'),
 ]
 
 fp16 = dict(loss_scale='dynamic')

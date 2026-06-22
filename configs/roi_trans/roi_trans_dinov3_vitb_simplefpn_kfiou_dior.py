@@ -199,7 +199,7 @@ model = dict(
             nms_pre=2000,
             min_bbox_size=0,
             score_thr=0.05,
-            nms=dict(type=angle_version, iou_thr=0.1),
+            nms=dict(type='nms', iou_thr=0.1),
             max_per_img=2000),
     ),
 )

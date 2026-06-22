@@ -372,7 +372,7 @@ custom_hooks = [
     dict(type='EMAHook', momentum=0.9998, priority='ABOVE_NORMAL'),
 ]
 
-fp16 = dict(loss_scale=512.0)
+fp16 = dict(loss_scale='dynamic')
 
 dist_params = dict(backend='nccl')
 log_level = 'INFO'

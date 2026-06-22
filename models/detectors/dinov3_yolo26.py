@@ -161,8 +161,17 @@ class DINOv3YOLO26(RotatedBaseDetector):
         # Extract features
         x = self.extract_feat(img)
 
-        # Forward through head
-        outs = self.bbox_head(x)
+        # Choose detection branch by test_cfg.end2end:
+        #   end2end=True  -> O2O (one-to-one) branch, NMS-free inference
+        #   end2end=False -> O2M (one-to-many) branch, NMS-based inference
+        # The O2M branch assigns multiple anchors per object, so it MUST go
+        # through NMS; running it NMS-free floods the output with duplicates.
+        test_cfg = self.bbox_head.test_cfg or {}
+        use_end2end = test_cfg.get('end2end', False)
+        if use_end2end and hasattr(self.bbox_head, 'forward_o2o'):
+            outs = self.bbox_head.forward_o2o(x)
+        else:
+            outs = self.bbox_head(x)
 
         # Get final bounding boxes
         bbox_list = self.bbox_head.get_bboxes(

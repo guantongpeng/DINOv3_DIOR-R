@@ -38,12 +38,11 @@ tools/train.py:299  model.init_weights()                  [vit_dinov3.py:386]
 
 ## 2. Checkpoint 文件分析
 
-两个配置文件使用相同的 Meta 官方 DINOv3 发布的 checkpoint 文件：
+配置文件使用 Meta 官方 DINOv3 发布的 checkpoint 文件：
 
 | 配置文件 | Checkpoint 路径 | 大小 |
 |----------|----------------|------|
 | DIOR-R | `data/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth` | 327 MB |
-| Star | `/mnt/ht2-nas2/EO_test/.../dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth` | 327 MB |
 
 ### Checkpoint 结构（Meta 官方格式）
 

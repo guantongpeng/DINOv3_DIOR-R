@@ -146,11 +146,13 @@ model = dict(
 
     # -------------------------- Testing Config --------------------------
     test_cfg=dict(
-        # End-to-end NMS-free inference
-        end2end=True,
+        # Bug1 fix: simple_test() always runs the O2M (one-to-many) head, which
+        # outputs many overlapping boxes per object. NMS-free (end2end) inference
+        # is only valid for the O2O branch, which is never used at inference
+        # here. Force the NMS path so O2M detections are de-duplicated.
+        end2end=False,
         score_thr=0.05,
         max_per_img=300,
-        # NMS config (fallback for O2M mode)
         nms=dict(type='nms_rotated', iou_thr=0.1),
         nms_pre=2000,
     ),
@@ -327,7 +329,7 @@ log_config = dict(
 )
 
 # Mixed precision training
-fp16 = dict(loss_scale=512.0)
+fp16 = dict(loss_scale='dynamic')
 
 # Distributed training
 dist_params = dict(backend='nccl')

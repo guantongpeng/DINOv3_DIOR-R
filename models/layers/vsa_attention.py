@@ -22,13 +22,14 @@ class VariedSizeAttention(MultiScaleDeformableAttention):
             embed_dims=embed_dims, num_heads=num_heads, num_levels=num_levels,
             num_points=num_points, dropout=dropout, batch_first=True, **kwargs)
 
-    def forward(self, query, key=None, value=None, identity=None, query_pos=None,
+    def forward(self, query, key=None, value=None, query_pos=None,
                 key_padding_mask=None, reference_points=None,
                 spatial_shapes=None, level_start_index=None, **kwargs):
+        # NOTE: no internal residual here; the caller (encoder/decoder layer)
+        # is responsible for adding the identity connection, matching the
+        # standard Deformable DETR transformer layer.
         if value is None:
             value = query
-        if identity is None:
-            identity = query
         if query_pos is not None:
             query = query + query_pos
         if not self.batch_first:
@@ -73,4 +74,4 @@ class VariedSizeAttention(MultiScaleDeformableAttention):
         output = self.output_proj(output)
         if not self.batch_first:
             output = output.permute(1, 0, 2)
-        return self.dropout(output) + identity
+        return self.dropout(output)
