@@ -1,0 +1,6 @@
+[submodule "third_party/dinov3"]
+	path = third_party/dinov3
+	url = https://github.com/facebookresearch/dinov3.git
+[submodule "third_party/openmmlab/mmrotate"]
+	path = third_party/openmmlab/mmrotate
+	url = https://gitee.com/open-mmlab/mmrotate.git
