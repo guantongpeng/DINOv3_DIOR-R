@@ -555,7 +555,7 @@ DOTA txt → load_annotations() → poly2obb_np() → OBB格式
 
 ```bash
 # 分布式训练 (6 GPU)
-bash tools/dist_train.sh
+bash scripts/dist_train.sh
 
 # 等效命令
 CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python -m torch.distributed.run \
@@ -598,5 +598,5 @@ timm >= 1.0
 ### 8.4 分布式测试
 
 ```bash
-bash tools/dist_test.sh
+bash scripts/dist_test.sh
 ```

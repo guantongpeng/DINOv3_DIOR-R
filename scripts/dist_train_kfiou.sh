@@ -1,38 +1,42 @@
 #!/usr/bin/env bash
 # =============================================================================
-# YOLO26 + DINOv3 ViT-B/16 (DIOR-R)
+# Oriented R-CNN + DINOv3 ViT-B/16 + SimpleFPN + KFIoU (DIOR-R) — Path A
 # =============================================================================
-# Config: configs/yolo26/yolo26_dinov3_fpn_dior.py
+# Config: configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_simplefpn_kfiou_dior.py
+#
+# Same as the SimpleFPN baseline but swaps the regression head/loss from
+# SmoothL1 to KFIoU (RotatedKFIoUShared2FCBBoxHead + KFLoss). Lowest-risk
+# rotated-head upgrade (typically +1~3 mAP@0.5).
 #
 # Usage:
-#   bash tools/dist_train_vitb_yolo.sh
+#   bash scripts/dist_train_kfiou.sh
 #
 # Common overrides (environment variables):
 #   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7   # which GPUs to use
-#   NUM_GPUS=8                              # number of GPUs (must match list above)
-#   SAMPLES_PER_GPU=16                      # batch size per GPU
-#   MAX_EPOCHS=200                          # schedule length
-#   MASTER_PORT=29506                       # DDP port (change if 'port in use')
+#   SAMPLES_PER_GPU=8                       # batch size per GPU
+#   MAX_EPOCHS=120                          # schedule length
+#   MASTER_PORT=29508                       # DDP port (change if 'port in use')
 #   RESUME=work_dirs/.../latest.pth         # resume from a checkpoint
 #   WORK_DIR=work_dirs/my_run               # custom output dir
 #
 # Examples:
-#   bash tools/dist_train_vitb_yolo.sh
-#   CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 bash tools/dist_train_vitb_yolo.sh
-#   RESUME=work_dirs/.../latest.pth bash tools/dist_train_vitb_yolo.sh
+#   bash scripts/dist_train_kfiou.sh
+#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/dist_train_kfiou.sh
+#   RESUME=work_dirs/.../latest.pth bash scripts/dist_train_kfiou.sh
 # =============================================================================
 
 set -e
 
 # ----------------------------- configuration --------------------------------
-CONFIG='configs/yolo26/yolo26_dinov3_fpn_dior.py'
+CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_simplefpn_kfiou_dior.py'
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
-NUM_GPUS=${NUM_GPUS:-8}
-MASTER_PORT=${MASTER_PORT:-29506}
-SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-16}
-MAX_EPOCHS=${MAX_EPOCHS:-200}
-WORK_DIR=${WORK_DIR:-"work_dirs/yolo26_dinov3_fpn_dior_$(date +%Y%m%d_%H%M%S)"}
+NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '
+' | wc -l)
+MASTER_PORT=${MASTER_PORT:-29508}
+SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-8}
+MAX_EPOCHS=${MAX_EPOCHS:-120}
+WORK_DIR=${WORK_DIR:-"work_dirs/oriented_rcnn_dinov3_vitb_simplefpn_kfiou_dior_$(date +%Y%m%d_%H%M%S)"}
 
 # Tuning knobs passed to the config at runtime
 EXTRA_CFG=""
@@ -50,12 +54,6 @@ if [ ! -f "${CONFIG}" ]; then
     exit 1
 fi
 
-NGPU_LIST=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
-if [ "${NGPU_LIST}" -ne "${NUM_GPUS}" ]; then
-    echo "WARNING: CUDA_VISIBLE_DEVICES lists ${NGPU_LIST} GPUs but NUM_GPUS=${NUM_GPUS}."
-    echo "         Setting NUM_GPUS=${NGPU_LIST}."
-    NUM_GPUS=${NGPU_LIST}
-fi
 
 mkdir -p "${WORK_DIR}"
 
@@ -64,7 +62,7 @@ CMD="CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 CMD="${CMD} python -m torch.distributed.run"
 CMD="${CMD} --nproc_per_node=${NUM_GPUS}"
 CMD="${CMD} --master_port=${MASTER_PORT}"
-CMD="${CMD} $(dirname "$0")/train.py"
+CMD="${CMD} $(dirname "$0")/../tools/train.py"
 CMD="${CMD} ${CONFIG}"
 CMD="${CMD} --launcher pytorch"
 CMD="${CMD} --work-dir ${WORK_DIR}"
@@ -79,7 +77,7 @@ if [ -n "${RESUME}" ]; then
 fi
 
 echo "================================================"
-echo "YOLO26 + DINOv3 ViT-B/16"
+echo "Oriented R-CNN + DINOv3 ViT-B/16 + SimpleFPN + KFIoU (Path A)"
 echo "GPUs       : ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS})"
 echo "Batch/GPU  : ${SAMPLES_PER_GPU}   (effective batch = $((SAMPLES_PER_GPU * NUM_GPUS)))"
 echo "Epochs     : ${MAX_EPOCHS}"
@@ -96,6 +94,6 @@ echo "Training finished. Results in: ${WORK_DIR}"
 echo "Best checkpoint: ${WORK_DIR}/best_mAP*.pth"
 echo ""
 echo "Test on the official DIOR-R test set:"
-echo "  CONFIG='configs/yolo26/yolo26_dinov3_fpn_dior.py' \\"
+echo "  CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_simplefpn_kfiou_dior.py' \\"
 echo "  TEST_CKPT=${WORK_DIR}/best_mAP_epoch_*.pth \\"
-echo "  WORK_DIR=${WORK_DIR} SAVE_VIS=0 NUM_GPUS=${NUM_GPUS} bash tools/test.sh"
+echo "  WORK_DIR=${WORK_DIR} SAVE_VIS=0 NUM_GPUS=${NUM_GPUS} bash scripts/test.sh"

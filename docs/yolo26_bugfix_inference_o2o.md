@@ -156,7 +156,7 @@ else:
 ```bash
 RESUME=work_dirs/yolo26_dinov3_fpn_dior_20260616_191827/epoch_60_o2ofixed.pth \
 WORK_DIR=work_dirs/yolo26_dinov3_fpn_dior_bugfix \
-MASTER_PORT=29600 bash tools/dist_train_vitb_yolo.sh
+MASTER_PORT=29600 bash scripts/dist_train_vitb_yolo.sh
 ```
 
 - 8 GPU，`samples_per_gpu=16`（有效 batch 128），余弦退火继续到 epoch 200。
@@ -173,7 +173,7 @@ CKPT=work_dirs/yolo26_dinov3_fpn_dior_bugfix/best_mAP*.pth
 
 # 路径 A：O2M + NMS（可靠，预期 > 0.60）
 TEST_CKPT=$CKPT WORK_DIR=work_dirs/yolo26_dinov3_fpn_dior_bugfix \
-  SAVE_VIS=0 NUM_GPUS=8 bash tools/test.sh
+  SAVE_VIS=0 NUM_GPUS=8 bash scripts/test.sh
 
 # 路径 B：O2O NMS-free（Bug3 启用）
 python -m torch.distributed.run --nproc_per_node=8 --master_port=29610 \

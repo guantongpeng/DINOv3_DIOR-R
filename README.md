@@ -14,6 +14,7 @@
 | **Oriented R-CNN** | 两阶段（旋转 RPN + RoI） | ViT-L / ViTDetFPN | `configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py` |
 | **Oriented R-CNN** | 两阶段 | ViT-B / ViTDetFPN | `configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py` |
 | **Oriented R-CNN** | 两阶段 | ViT-B / SimpleFeaturePyramid | `configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_simplefpn_dior.py` |
+| **Oriented R-CNN** | 两阶段 | ViT-B / **ViT-Adapter**（两阶段训练） | `configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_adapter_stage{1,2}_dior.py` |
 | **Oriented R-CNN** | 两阶段（KFIoU） | ViT-B / SimpleFeaturePyramid | `configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_simplefpn_kfiou_dior.py` |
 | **RoI Transformer** | 两阶段（水平 RPN + 旋转细化，KFIoU） | ViT-B / SimpleFeaturePyramid | `configs/roi_trans/roi_trans_dinov3_vitb_simplefpn_kfiou_dior.py` |
 | **RVSA** | Transformer（VSA 注意力，集合预测） | ViT-L / ViTDetFPN | `configs/rvsa/rvsa_dinov3_vitl_dior.py` |
@@ -30,7 +31,11 @@
 | Backbone | DINOv3 ViT-B/L | 官方 Meta 封装 `DinoVisionTransformerBackbone`；ViT-B 取 blocks [3,5,8,11]，ViT-L 取 [5,11,17,23] |
 | Neck | **ViTDetFPN**（默认） | 渐进式上采样 + top-down 融合 + SE 注意力, 输出 stride [4,8,16,32] |
 | 备选 Neck | SimpleFeaturePyramid / SimpleFPN | 单层 ViT 特征 → 金字塔 / 4 层 ViT 特征 → [8,16,32,64] |
+| 进阶 Neck | **ViT-Adapter** | 冻结 ViT + 空间先验 + 多尺度可变形注意力，多层 ViT 特征交互；显存/算力开销大 |
 | 检测头 | OrientedRPN + OrientedStandardRoIHead / YOLO26 / RVSA / RoITrans | 见上表 |
+
+> **ViT-Adapter 说明**：用可变形注意力把冻结 ViT 的多层特征重建为多尺度金字塔，理论上对密集预测（检测/分割）最优，但训练成本高、对超参敏感。
+> 详见 [docs/vit_adapter_explained.md](docs/vit_adapter_explained.md)（含原理、实现、**早期训练效果下降的根因诊断与修正建议**）。
 
 ## 环境要求
 
@@ -40,7 +45,8 @@
 - timm >= 1.0
 
 ```bash
-conda activate mmdet
+cd third_party/openmmlab/mmrotate
+pip install -v -e . --no-build-isolation
 ```
 
 > **PyTorch 2.7 兼容性说明**：`tools/train.py` 与 `tools/test.py` 内置了 monkey-patch 以适配 PyTorch 2.7+：
@@ -59,6 +65,9 @@ mm_dino/
 │   │   ├── oriented_rcnn_dinov3_fpn_dior.py          # ViT-L + ViTDetFPN
 │   │   ├── oriented_rcnn_dinov3_vitb_fpn_dior.py     # ViT-B + ViTDetFPN
 │   │   ├── oriented_rcnn_dinov3_vitb_simplefpn_dior.py
+│   │   ├── _oriented_rcnn_dinov3_vitb_adapter_base_dior.py   # ViT-Adapter 共享基座
+│   │   ├── oriented_rcnn_dinov3_vitb_adapter_stage1_dior.py  # 两阶段 stage1（冻结 ViT）
+│   │   ├── oriented_rcnn_dinov3_vitb_adapter_stage2_dior.py  # 两阶段 stage2（端到端微调）
 │   │   └── oriented_rcnn_dinov3_vitb_simplefpn_kfiou_dior.py
 │   ├── roi_trans/                         # RoI Transformer 配置
 │   ├── rvsa/                              # RVSA 配置
@@ -66,10 +75,12 @@ mm_dino/
 ├── models/
 │   ├── backbones/
 │   │   ├── dinov3_wrapper.py             # 官方 Meta DINOv3 封装（DIOR 配置使用）
+│   │   ├── dinov3_vit_adapter.py         # ViT-Adapter backbone（可变形注意力多层融合）
 │   │   └── vit_dinov3.py                 # timm 版 DINOv3 封装
 │   ├── necks/
 │   │   ├── vitdet_fpn.py                # ViTDetFPN（推荐）
 │   │   ├── simple_feature_pyramid.py    # SimpleFeaturePyramid（ViTDet 标准配方）
+│   │   ├── passthrough_neck.py          # PassthroughNeck（ViT-Adapter 配套透传 neck）
 │   │   └── simple_fpn.py                # SimpleFPN
 │   ├── heads/yolo26_rotated_head.py     # YOLO26 旋转检测头
 │   ├── dense_heads/rvsa_head.py         # RVSA head
@@ -80,31 +91,45 @@ mm_dino/
 │   ├── datasets/
 │   │   └── dior.py                      # DIOR-R 数据集
 │   ├── pipelines/albu_metadata.py       # Albu 增强 pipeline
-│   └── hooks.py                         # ProgressiveLossHook（YOLO26 渐进式 loss）
-├── tools/
-│   ├── train.py                          # 训练脚本（含 PyTorch 2.7 兼容补丁）
-│   ├── test.py                           # 评估脚本
-│   ├── dist_train.sh                     # Oriented R-CNN (ViT-L) 分布式训练
-│   ├── dist_train_vitb.sh                # Oriented R-CNN (ViT-B) 分布式训练
-│   ├── dist_train_vitb_yolo.sh           # YOLO26 (ViT-B) 分布式训练
-│   ├── dist_train_roitrans.sh            # RoI Transformer 分布式训练
-│   ├── test.sh                           # 评估脚本
+│   └── hooks.py                         # ProgressiveLossHook / RegZeroInitHook（回归头零初始化）
+├── tools/                              # Python 工具脚本（训练/评估入口）
+│   ├── train.py                          # 训练入口（含 PyTorch 2.7 兼容补丁）
+│   ├── test.py                           # 评估入口
 │   ├── plot_loss.py                      # 训练曲线绘制
 │   ├── verify_dinov3_weights.py          # DINOv3 权重加载校验
+│   ├── verify_adapter_alignment.py       # ViT-Adapter 空间对齐校验
 │   └── yolo2dota.py                      # YOLO OBB → DOTA 标注转换
+├── scripts/                            # 分布式训练/评估 shell 脚本（统一入口）
+│   ├── dist_train.sh                     # Oriented R-CNN (ViT-L) 分布式训练
+│   ├── dist_train_vitb.sh                # Oriented R-CNN (ViT-B) 分布式训练
+│   ├── dist_train_adapter_twostage.sh    # ViT-Adapter 两阶段训练（ViT-B，stage1→stage2）
+│   ├── dist_train_adapter_twostage_vitl.sh # ViT-Adapter 两阶段训练（ViT-L）
+│   ├── dist_train_vitb_yolo.sh           # YOLO26 (ViT-B) 分布式训练
+│   ├── dist_train_roitrans.sh            # RoI Transformer 分布式训练
+│   ├── dist_train_kfiou.sh               # KFIoU 分布式训练
+│   ├── dist_train_simplefpn.sh           # SimpleFPN 分布式训练
+│   ├── dist_train_trainval.sh            # trainval 训练
+│   ├── dist_train_trainval_vitb_fpn.sh   # ViT-B + ViTDetFPN trainval 训练
+│   ├── dist_train_trainval_swin_large.sh # Swin-Large trainval 训练
+│   └── test.sh                           # 分布式评估脚本
 ├── data/
 │   ├── prepare_dior.py                   # DIOR-R 数据集准备
 │   ├── convert_dior_xml_to_dota.py       # DIOR XML → DOTA 标注转换
 │   └── weights/                          # 预训练权重（见下表）
-└── docs/
-    ├── model_architecture.md             # 整体架构详解
-    ├── yolo26_detection_head.md          # YOLO26 检测头文档
-    ├── oriented_rcnn_dinov3_dior.md      # Oriented R-CNN (DIOR-R) 详细文档
-    ├── dinov3_local_checkpoint.md        # 本地 checkpoint 加载说明
-    ├── dinov3_weight_verification.md     # 权重校验说明
-    ├── custom_25class_dataset.md         # 25 类自定义数据集说明
-    ├── yolo2dota_tool.md                 # YOLO→DOTA 工具说明
-    └── pytorch27_compatibility_fixes.md  # PyTorch 2.7 兼容修复
+├── docs/
+│   ├── model_architecture.md             # 整体架构详解
+│   ├── vit_adapter_explained.md          # ViT-Adapter 原理/实现/早期训练下降诊断
+│   ├── yolo26_detection_head.md          # YOLO26 检测头文档
+│   ├── oriented_rcnn_dinov3_dior.md      # Oriented R-CNN (DIOR-R) 详细文档
+│   ├── dinov3_local_checkpoint.md        # 本地 checkpoint 加载说明
+│   ├── dinov3_weight_verification.md     # 权重校验说明
+│   ├── custom_25class_dataset.md         # 25 类自定义数据集说明
+│   ├── yolo2dota_tool.md                 # YOLO→DOTA 工具说明
+│   └── pytorch27_compatibility_fixes.md  # PyTorch 2.7 兼容修复
+└── third_party/                         # 第三方库（DINOv3 / OpenMMLab）
+    ├── dinov3/                          # 官方 DINOv3 源码（backbone 经 DINOV3_SRC 引用）
+    └── openmmlab/
+        └── mmrotate/                    # MMRotate（editable 安装指向此目录）
 ```
 
 ## 快速开始
@@ -141,16 +166,20 @@ data/DIOR-R/
 
 ```bash
 # Oriented R-CNN (ViT-L, DIOR-R) — 6 GPU
-bash tools/dist_train.sh
+bash scripts/dist_train.sh
 
 # Oriented R-CNN (ViT-B, DIOR-R) — 6 GPU
-bash tools/dist_train_vitb.sh
+bash scripts/dist_train_vitb.sh
 
 # YOLO26 (ViT-B, DIOR-R) — 8 GPU
-bash tools/dist_train_vitb_yolo.sh
+bash scripts/dist_train_vitb_yolo.sh
 
 # RoI Transformer (ViT-B, DIOR-R)
-bash tools/dist_train_roitrans.sh
+bash scripts/dist_train_roitrans.sh
+
+# ViT-Adapter 两阶段（ViT-B, DIOR-R）：stage1 冻结 ViT 训 adapter → stage2 端到端微调
+bash scripts/dist_train_adapter_twostage.sh
+# 只跑某一阶段：STAGE=1 bash scripts/dist_train_adapter_twostage.sh
 
 # 单 GPU
 python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py

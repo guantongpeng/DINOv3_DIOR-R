@@ -3,30 +3,27 @@
 # Test Script for Oriented R-CNN with DINOv3 Backbone on DIOR-R
 # =============================================================================
 # Usage:
-#   bash tools/test.sh
+#   bash scripts/test.sh
 #
 # Options (set via environment variables):
-#   NUM_GPUS=4           Number of GPUs for distributed testing (default: 1)
+#   CUDA_VISIBLE_DEVICES=0,1,2,3   Which GPUs to use (NUM_GPUS auto-derived)
 #   SAVE_VIS=1           Save detection images with boxes and class names
 #   SAVE_VIS=0           Only compute metrics, no image saving (faster)
 #   SHOW_SCORE_THR       Score threshold for visualized boxes (default: 0.3)
 #   VIS_DIR              Directory to save visualized images
 #
-# Note: SAVE_VIS=1 forces single-GPU mode (visualization not supported in
-#       distributed mode). For fastest evaluation, use SAVE_VIS=0 NUM_GPUS=N.
+# Note: NUM_GPUS is auto-derived from CUDA_VISIBLE_DEVICES. SAVE_VIS=1 forces
+#       single-GPU mode (visualization not supported in distributed mode).
 #
 # Examples:
 #   # Single GPU, metrics only (fastest single GPU)
-#   SAVE_VIS=0 bash tools/test.sh
+#   CUDA_VISIBLE_DEVICES=0 SAVE_VIS=0 bash scripts/test.sh
 #
 #   # 4 GPUs distributed, metrics only (fastest overall)
-#   SAVE_VIS=0 NUM_GPUS=4 CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/test.sh
-#
-#   # 8 GPUs distributed, metrics only
-#   SAVE_VIS=0 NUM_GPUS=8 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash tools/test.sh
+#   CUDA_VISIBLE_DEVICES=0,1,2,3 SAVE_VIS=0 bash scripts/test.sh
 #
 #   # Single GPU + save visualizations
-#   SAVE_VIS=1 bash tools/test.sh
+#   CUDA_VISIBLE_DEVICES=0 SAVE_VIS=1 bash scripts/test.sh
 # =============================================================================
 
 set -e
@@ -45,7 +42,8 @@ fi
 CHECKPOINT=${TEST_CKPT:-"${DEFAULT_CKPT}"}
 
 # GPU settings
-NUM_GPUS=${NUM_GPUS:-1}
+NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '
+' | wc -l)
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 # MASTER_PORT is resolved below (auto-picked when unset, verified when set).
 
@@ -96,7 +94,7 @@ else
         echo "ERROR: MASTER_PORT=${MASTER_PORT} is already in use (likely another distributed job)."
         FREE_PORT=$(_find_free_port)
         echo "       A free port is: ${FREE_PORT}"
-        echo "       Re-run with: MASTER_PORT=${FREE_PORT} bash tools/test.sh"
+        echo "       Re-run with: MASTER_PORT=${FREE_PORT} bash scripts/test.sh"
         exit 1
     fi
 fi

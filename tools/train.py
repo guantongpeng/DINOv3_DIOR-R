@@ -13,7 +13,7 @@ Usage:
     python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
 
     # Multi-GPU training (4 GPUs)
-    bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
+    bash scripts/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
 
     # Resume from checkpoint
     python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
@@ -334,13 +334,15 @@ def main():
         # Enable find_unused_parameters only when necessary (frozen backbone
         # or progressive O2O training create params outside the loss graph).
         # Otherwise skip it to avoid the ~10-20% DDP overhead.
-        frozen_stages = cfg.model.get('backbone', {}).get('frozen_stages', -1)
+        backbone_cfg = cfg.model.get('backbone', {})
+        frozen_stages = backbone_cfg.get('frozen_stages', -1)
+        freeze_vit = backbone_cfg.get('freeze_vit', False)
         progressive_cfg = cfg.model.get('train_cfg', {}).get('progressive_loss', None)
-        if frozen_stages >= 0 or progressive_cfg is not None:
+        if frozen_stages >= 0 or progressive_cfg is not None or freeze_vit:
             cfg.find_unused_parameters = True
             logger.info(
-                'find_unused_parameters=True (frozen_stages=%s, progressive_loss=%s)',
-                frozen_stages, progressive_cfg is not None,
+                'find_unused_parameters=True (frozen_stages=%s, freeze_vit=%s, progressive_loss=%s)',
+                frozen_stages, freeze_vit, progressive_cfg is not None,
             )
         else:
             cfg.find_unused_parameters = False

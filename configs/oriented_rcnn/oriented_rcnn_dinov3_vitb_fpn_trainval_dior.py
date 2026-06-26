@@ -23,7 +23,7 @@
 # Everything else (oriented R-CNN head, class weights, EMA, AdamW) is inherited.
 #
 # Usage:
-#   bash tools/dist_train_trainval_vitb_fpn.sh
+#   bash scripts/dist_train_trainval_vitb_fpn.sh
 # =============================================================================
 
 _base_ = ['./oriented_rcnn_dinov3_vitb_fpn_dior.py']

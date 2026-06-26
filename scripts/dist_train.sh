@@ -5,11 +5,10 @@
 # Config: configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
 #
 # Usage:
-#   bash tools/dist_train.sh
+#   bash scripts/dist_train.sh
 #
 # Common overrides (environment variables):
 #   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7   # which GPUs to use
-#   NUM_GPUS=8                              # number of GPUs (must match list above)
 #   SAMPLES_PER_GPU=4                       # batch size per GPU
 #   MAX_EPOCHS=300                          # schedule length
 #   MASTER_PORT=29504                       # DDP port (change if 'port in use')
@@ -17,9 +16,9 @@
 #   WORK_DIR=work_dirs/my_run               # custom output dir
 #
 # Examples:
-#   bash tools/dist_train.sh
-#   CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 bash tools/dist_train.sh
-#   RESUME=work_dirs/.../latest.pth bash tools/dist_train.sh
+#   bash scripts/dist_train.sh
+#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/dist_train.sh
+#   RESUME=work_dirs/.../latest.pth bash scripts/dist_train.sh
 # =============================================================================
 
 set -e
@@ -28,7 +27,8 @@ set -e
 CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py'
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
-NUM_GPUS=${NUM_GPUS:-8}
+NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '
+' | wc -l)
 MASTER_PORT=${MASTER_PORT:-29504}
 SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-4}
 MAX_EPOCHS=${MAX_EPOCHS:-300}
@@ -50,12 +50,6 @@ if [ ! -f "${CONFIG}" ]; then
     exit 1
 fi
 
-NGPU_LIST=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
-if [ "${NGPU_LIST}" -ne "${NUM_GPUS}" ]; then
-    echo "WARNING: CUDA_VISIBLE_DEVICES lists ${NGPU_LIST} GPUs but NUM_GPUS=${NUM_GPUS}."
-    echo "         Setting NUM_GPUS=${NGPU_LIST}."
-    NUM_GPUS=${NGPU_LIST}
-fi
 
 mkdir -p "${WORK_DIR}"
 
@@ -64,7 +58,7 @@ CMD="CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 CMD="${CMD} python -m torch.distributed.run"
 CMD="${CMD} --nproc_per_node=${NUM_GPUS}"
 CMD="${CMD} --master_port=${MASTER_PORT}"
-CMD="${CMD} $(dirname "$0")/train.py"
+CMD="${CMD} $(dirname "$0")/../tools/train.py"
 CMD="${CMD} ${CONFIG}"
 CMD="${CMD} --launcher pytorch"
 CMD="${CMD} --work-dir ${WORK_DIR}"
@@ -98,4 +92,4 @@ echo ""
 echo "Test on the official DIOR-R test set:"
 echo "  CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py' \\"
 echo "  TEST_CKPT=${WORK_DIR}/best_mAP_epoch_*.pth \\"
-echo "  WORK_DIR=${WORK_DIR} SAVE_VIS=0 NUM_GPUS=${NUM_GPUS} bash tools/test.sh"
+echo "  WORK_DIR=${WORK_DIR} SAVE_VIS=0 NUM_GPUS=${NUM_GPUS} bash scripts/test.sh"

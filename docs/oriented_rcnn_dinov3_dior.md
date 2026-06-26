@@ -328,14 +328,14 @@ python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
 
 ```bash
 # 4 GPU训练
-bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
+bash scripts/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
 
 # 8 GPU训练
-bash tools/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 8 \
+bash scripts/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 8 \
     --work-dir work_dirs/my_experiment
 
 # 指定GPU
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/dist_train.sh \
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/dist_train.sh \
     configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
 ```
 
@@ -364,7 +364,7 @@ python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
     --eval mAP
 
 # 多GPU评估
-bash tools/dist_test.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+bash scripts/dist_test.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
     work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth 4 \
     --eval mAP
 
@@ -516,7 +516,7 @@ Address already in use
 **解决方案**:
 ```bash
 # 使用不同端口
-PORT=29501 bash tools/dist_train.sh ... 4
+PORT=29501 bash scripts/dist_train.sh ... 4
 ```
 
 ## 参考 | References

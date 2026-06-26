@@ -127,6 +127,8 @@ train_pipeline = [
     dict(type='RResize', img_scale=train_scales, multiscale_mode='value'),
     dict(type='RRandomFlip', flip_ratio=[0.25, 0.25, 0.25],
          direction=['horizontal', 'vertical', 'diagonal'], version='le90'),
+    dict(type='PolyRandomRotate', rotate_ratio=0.5, angles_range=180,
+         auto_bound=False, version='le90'),
     dict(type='PhotoMetricDistortion', brightness_delta=32,
          contrast_range=(0.5, 1.5), saturation_range=(0.5, 1.5), hue_delta=18),
     dict(type='Normalize', **img_norm_cfg),

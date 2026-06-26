@@ -1,49 +1,50 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Oriented R-CNN + DINOv3 ViT-B/16 + ViTDetFPN (MULTI-LAYER) — TRAINVAL + rot aug
+# Oriented R-CNN + Swin Transformer v1 (Swin-L) + FPN on DIOR-R — TRAINVAL run
 # =============================================================================
-# Config: configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_trainval_dior.py
+# Config: configs/oriented_rcnn/oriented_rcnn_swin_large_trainval_dior.py
 #
-# Multi-layer ViTDetFPN (layers_to_use=[3,5,8,11], the ~0.71+ recipe) trained on
-# the FULL DIOR-R trainval pool (train + val merged) with rotation augmentation
-# (PolyRandomRotate). The held-out TEST split is used for periodic eval /
-# save_best model selection and for the final tools/test.py run.
+# Full-parameter fine-tuning of Swin-L (ImageNet-22k, window12/384) with the
+# Oriented R-CNN head, trained on the FULL DIOR-R trainval pool (train + val
+# merged). The held-out TEST split is used for periodic eval / save_best model
+# selection and for the final tools/test.py run (no leakage: test is never seen
+# by the optimizer).
 #
 # NOTE on eval cost: val == test here, so every evaluation runs over the full
 # (~11.7k-image) test set. Use EVAL_INTERVAL to control how often this happens.
 #
 # Usage:
-#   bash tools/dist_train_trainval_vitb_fpn.sh
+#   bash scripts/dist_train_trainval_swin_large.sh
 #
 # Common overrides (environment variables):
 #   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7   # which GPUs to use
-#   NUM_GPUS=8                              # number of GPUs (must match list above)
-#   SAMPLES_PER_GPU=16                      # batch size per GPU
+#   SAMPLES_PER_GPU=4                       # batch size per GPU (Swin-L is heavy)
 #   MAX_EPOCHS=300                          # schedule length
 #   EVAL_INTERVAL=3                         # epochs between test-set evals
-#   MASTER_PORT=29509                       # DDP port (change if 'port in use')
+#   MASTER_PORT=29511                       # DDP port (change if 'port in use')
 #   RESUME=work_dirs/.../latest.pth         # resume from a checkpoint
 #   WORK_DIR=work_dirs/my_run               # custom output dir
 #
 # Examples:
-#   bash tools/dist_train_trainval_vitb_fpn.sh
-#   CUDA_VISIBLE_DEVICES=0,1 NUM_GPUS=2 SAMPLES_PER_GPU=8 bash tools/dist_train_trainval_vitb_fpn.sh
-#   EVAL_INTERVAL=5 bash tools/dist_train_trainval_vitb_fpn.sh     # less frequent (cheaper) eval
-#   RESUME=work_dirs/.../latest.pth bash tools/dist_train_trainval_vitb_fpn.sh
+#   bash scripts/dist_train_trainval_swin_large.sh
+#   CUDA_VISIBLE_DEVICES=0,1 SAMPLES_PER_GPU=2 bash scripts/dist_train_trainval_swin_large.sh
+#   EVAL_INTERVAL=5 bash scripts/dist_train_trainval_swin_large.sh   # cheaper eval
+#   RESUME=work_dirs/.../latest.pth bash scripts/dist_train_trainval_swin_large.sh
 # =============================================================================
 
 set -e
 
 # ----------------------------- configuration --------------------------------
-CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_trainval_dior.py'
+CONFIG='configs/oriented_rcnn/oriented_rcnn_swin_large_trainval_dior.py'
 
-CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-4,5,6,7}
-NUM_GPUS=${NUM_GPUS:-4}
-MASTER_PORT=${MASTER_PORT:-29509}
-SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-16}
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '
+' | wc -l)
+MASTER_PORT=${MASTER_PORT:-29511}
+SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-20}
 MAX_EPOCHS=${MAX_EPOCHS:-300}
 EVAL_INTERVAL=${EVAL_INTERVAL:-3}
-WORK_DIR=${WORK_DIR:-"work_dirs/oriented_rcnn_dinov3_vitb_fpn_trainval_dior_$(date +%Y%m%d_%H%M%S)"}
+WORK_DIR=${WORK_DIR:-"work_dirs/oriented_rcnn_swin_large_trainval_dior_$(date +%Y%m%d_%H%M%S)"}
 
 # Tuning knobs passed to the config at runtime
 EXTRA_CFG=""
@@ -62,12 +63,13 @@ if [ ! -f "${CONFIG}" ]; then
     exit 1
 fi
 
-NGPU_LIST=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
-if [ "${NGPU_LIST}" -ne "${NUM_GPUS}" ]; then
-    echo "WARNING: CUDA_VISIBLE_DEVICES lists ${NGPU_LIST} GPUs but NUM_GPUS=${NUM_GPUS}."
-    echo "         Setting NUM_GPUS=${NGPU_LIST}."
-    NUM_GPUS=${NGPU_LIST}
+SWIN_CKPT='/mnt/htzzb2/00-model/00-hlj/swin_weights_large384_22k/swin_large_patch4_window12_384_22k.pth'
+if [ ! -f "${SWIN_CKPT}" ]; then
+    echo "ERROR: Swin-L pretrained weights not found: ${SWIN_CKPT}"
+    exit 1
 fi
+echo ">> Using pretrained weights: ${SWIN_CKPT}"
+
 
 mkdir -p "${WORK_DIR}"
 
@@ -76,7 +78,7 @@ CMD="CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 CMD="${CMD} python -m torch.distributed.run"
 CMD="${CMD} --nproc_per_node=${NUM_GPUS}"
 CMD="${CMD} --master_port=${MASTER_PORT}"
-CMD="${CMD} $(dirname "$0")/train.py"
+CMD="${CMD} $(dirname "$0")/../tools/train.py"
 CMD="${CMD} ${CONFIG}"
 CMD="${CMD} --launcher pytorch"
 CMD="${CMD} --work-dir ${WORK_DIR}"
@@ -91,7 +93,7 @@ if [ -n "${RESUME}" ]; then
 fi
 
 echo "================================================"
-echo "Oriented R-CNN + DINOv3 ViT-B/16 + ViTDetFPN (TRAINVAL, multi-layer + rot aug)"
+echo "Oriented R-CNN + Swin-L (Swin v1, 22k) + FPN (TRAINVAL, full FT)"
 echo "Data       : train + val merged  |  eval on test split"
 echo "GPUs       : ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS})"
 echo "Batch/GPU  : ${SAMPLES_PER_GPU}   (effective batch = $((SAMPLES_PER_GPU * NUM_GPUS)))"
@@ -109,6 +111,6 @@ echo "Training finished. Results in: ${WORK_DIR}"
 echo "Best checkpoint (by test mAP): ${WORK_DIR}/best_mAP*.pth"
 echo ""
 echo "Final eval on the official DIOR-R test set (no aug, classwise AP):"
-echo "  CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_trainval_dior.py' \\"
+echo "  CONFIG='${CONFIG}' \\"
 echo "  TEST_CKPT=${WORK_DIR}/best_mAP_epoch_*.pth \\"
-echo "  WORK_DIR=${WORK_DIR} SAVE_VIS=0 NUM_GPUS=${NUM_GPUS} bash tools/test.sh"
+echo "  WORK_DIR=${WORK_DIR} SAVE_VIS=0 NUM_GPUS=${NUM_GPUS} bash scripts/test.sh"

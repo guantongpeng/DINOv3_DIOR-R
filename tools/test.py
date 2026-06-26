@@ -27,7 +27,7 @@ Usage:
         --show --show-dir vis_results
 
     # Multi-GPU evaluation
-    bash tools/dist_test.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+    bash scripts/test.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
         work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth 4 --eval mAP
 
 Environment:

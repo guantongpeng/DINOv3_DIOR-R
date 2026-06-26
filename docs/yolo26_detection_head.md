@@ -140,7 +140,7 @@ python tools/train.py configs/yolo26/yolo26_dinov3_fpn_dior.py \
 ### 多 GPU 训练
 
 ```bash
-bash tools/dist_train.sh configs/yolo26/yolo26_dinov3_fpn_dior.py 4
+bash scripts/dist_train.sh configs/yolo26/yolo26_dinov3_fpn_dior.py 4
 ```
 
 ### 从检查点恢复训练

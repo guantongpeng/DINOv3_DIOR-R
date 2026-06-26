@@ -28,7 +28,7 @@ model = dict(
             type='RotatedKFIoUShared2FCBBoxHead',
             in_channels=256,
             fc_out_channels=1024,
-            roi_feat_size=14,
+            roi_feat_size=7,
             num_classes=20,
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
@@ -44,7 +44,6 @@ model = dict(
                 type='CrossEntropyLoss',
                 use_sigmoid=False,
                 loss_weight=1.0,
-                label_smoothing=0.1,
             ),
             loss_bbox=dict(type='KFLoss', fun='ln', loss_weight=0.5),
         ),

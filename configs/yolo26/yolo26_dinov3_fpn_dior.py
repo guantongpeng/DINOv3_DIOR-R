@@ -192,6 +192,13 @@ train_pipeline = [
         version='le90',
     ),
     dict(
+        type='PolyRandomRotate',
+        rotate_ratio=0.5,
+        angles_range=180,
+        auto_bound=False,
+        version='le90',
+    ),
+    dict(
         type='AlbuMetadata',
         transforms=[
             dict(type='GaussNoise', var_limit=(10.0, 50.0), p=0.3),
@@ -303,7 +310,7 @@ optimizer = dict(
 )
 
 optimizer_config = dict(
-    grad_clip=dict(max_norm=35, norm_type=2),
+    grad_clip=dict(max_norm=10, norm_type=2),
 )
 
 # Learning rate schedule: Cosine annealing with linear warmup

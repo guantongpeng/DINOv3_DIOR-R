@@ -1,5 +1,5 @@
 # =============================================================================
-# BASE config: Oriented R-CNN + DINOv3 ViT-B/16 + ViT-Adapter (DIOR-R)
+# BASE config: Oriented R-CNN + DINOv3 ViT-L/16 + ViT-Adapter (DIOR-R)
 # =============================================================================
 # This is a SHARED base. Do not train it directly — use the stage1/stage2
 # configs that inherit from it.
@@ -8,7 +8,7 @@
 #   1. BACKBONE  -> ViT-Adapter (deformable attention + multi-layer ViT fusion),
 #                   replacing SimpleFeaturePyramid. The frozen ViT runs under
 #                   bfloat16 autocast (official DINOv3 eval recipe). Outputs the
-#                   FULL embed_dim (768-d) pyramid for the FPN to fuse.
+#                   FULL embed_dim (1024-d) pyramid for the FPN to fuse.
 #   2. NECK      -> FPN (lateral + top-down fusion, +P5 stride-64) instead of the
 #                   old PassthroughNeck. This matches the vit-adapter reference.
 #   3. ROTATED   -> test rcnn NMS uses rotated NMS @ iou_thr=0.1; RPN angle
@@ -40,13 +40,14 @@ model = dict(
     type='OrientedRCNN',
 
     # -------------------- Backbone: DINOv3 ViT-Adapter -----------------------
-    # Frozen ViT-B/16 + Spatial Prior Module + 4 deformable InteractionBlocks
-    # fusing ViT layers [2,5,8,11]. Outputs a 4-level pyramid @ 768 channels
-    # (full embed_dim), strides [4,8,16,32], fed into FPN.
+    # Frozen ViT-L/16 (1024-d, 24 blocks) + Spatial Prior Module + 4 deformable
+    # InteractionBlocks fusing ViT layers [5,11,17,23]. Outputs a 4-level pyramid
+    # @ 1024 channels (full embed_dim), strides [4,8,16,32], fed into FPN.
+    # bf16_vit runs the frozen ViT in bfloat16.
     backbone=dict(
         type='DINOv3ViTAdapter',
-        model_name='dinov3_vitb16',
-        interaction_indexes=[2, 5, 8, 11],
+        model_name='dinov3_vitl16',
+        interaction_indexes=[5, 11, 17, 23],
         freeze_vit=True,            # stage1 default; stage2 overrides to False
         pretrain_size=512,
         conv_inplane=64,
@@ -59,14 +60,14 @@ model = dict(
         with_cp=True,               # gradient checkpointing in extractors
         bf16_vit=True,              # bfloat16 autocast for the frozen ViT
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
+            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth',
         ),
     ),
 
     # -------------------- Neck: FPN on full embed_dim pyramid ----------------
     neck=dict(
         type='FPN',
-        in_channels=[768, 768, 768, 768],
+        in_channels=[1024, 1024, 1024, 1024],
         out_channels=256,
         start_level=0,
         add_extra_convs='on_output',
@@ -247,10 +248,10 @@ test_pipeline = [
 ]
 
 data = dict(
-    # Matches dist_train_adapter_twostage.sh default. The lr in the stage1/stage2
-    # configs assumes effective batch 192 (8 GPUs x 24); re-scale lr if you change
-    # GPU count or this value.
-    samples_per_gpu=24,
+    # Matches dist_train_adapter_twostage.sh default (samples_per_gpu=16, 8 GPUs ->
+    # effective batch 128). The lr in the stage1/stage2 configs is calibrated for
+    # batch 128; re-scale lr if you change GPU count or this value.
+    samples_per_gpu=4,
     workers_per_gpu=4,
     # TRAINVAL split: train on the FULL train+val pool (~11.7k images), use the
     # held-out test split for both model selection (val) and final eval (test).

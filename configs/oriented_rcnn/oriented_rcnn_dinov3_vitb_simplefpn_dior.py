@@ -92,7 +92,7 @@ model = dict(
             type='MidpointOffsetCoder',
             angle_range='le90',
             target_means=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            target_stds=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            target_stds=[1.0, 1.0, 1.0, 1.0, 0.5, 0.5],
         ),
         loss_cls=dict(
             type='CrossEntropyLoss',
@@ -113,7 +113,7 @@ model = dict(
             type='RotatedSingleRoIExtractor',
             roi_layer=dict(
                 type='RoIAlignRotated',
-                out_size=14,
+                out_size=7,
                 sample_num=2,
                 clockwise=True,
             ),
@@ -124,11 +124,14 @@ model = dict(
             type='RotatedShared2FCBBoxHead',
             in_channels=256,
             fc_out_channels=1024,
-            roi_feat_size=14,
+            roi_feat_size=7,
             num_classes=20,
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
                 angle_range='le90',
+                norm_factor=None,
+                edge_swap=True,
+                proj_xy=True,
                 target_means=[0.0, 0.0, 0.0, 0.0, 0.0],
                 target_stds=[0.1, 0.1, 0.2, 0.2, 0.1],
             ),
@@ -137,7 +140,6 @@ model = dict(
                 type='CrossEntropyLoss',
                 use_sigmoid=False,
                 loss_weight=1.0,
-                label_smoothing=0.1,
             ),
             loss_bbox=dict(
                 type='SmoothL1Loss',
@@ -157,7 +159,6 @@ model = dict(
                 min_pos_iou=0.3,
                 match_low_quality=True,
                 ignore_iof_thr=-1,
-                gpu_assign_thr=200,
             ),
             sampler=dict(
                 type='RandomSampler',
@@ -185,7 +186,6 @@ model = dict(
                 match_low_quality=False,
                 ignore_iof_thr=-1,
                 iou_calculator=dict(type='RBboxOverlaps2D'),
-                gpu_assign_thr=200,
             ),
             sampler=dict(
                 type='RRandomSampler',
@@ -211,7 +211,7 @@ model = dict(
             nms_pre=2000,
             min_bbox_size=0,
             score_thr=0.05,
-            nms=dict(type='nms', iou_thr=0.5),
+            nms=dict(iou_thr=0.1),
             max_per_img=2000,
         ),
     ),
@@ -245,6 +245,13 @@ train_pipeline = [
         type='RRandomFlip',
         flip_ratio=[0.5, 0.5],
         direction=['horizontal', 'vertical'],
+        version='le90',
+    ),
+    dict(
+        type='PolyRandomRotate',
+        rotate_ratio=0.5,
+        angles_range=180,
+        auto_bound=False,
         version='le90',
     ),
     dict(
@@ -344,7 +351,7 @@ optimizer = dict(
 )
 
 optimizer_config = dict(
-    grad_clip=dict(max_norm=35, norm_type=2),
+    grad_clip=dict(max_norm=10, norm_type=2),
 )
 
 lr_config = dict(

@@ -1,24 +1,32 @@
 # =============================================================================
-# Oriented R-CNN with DINOv3 Backbone for DIOR-R Dataset (v2 — optimized)
+# Oriented R-CNN + Swin Transformer v1 (Swin-L) + FPN on DIOR-R  (TRAINVAL run)
 # =============================================================================
-# Backbone: Meta official DINOv3 ViT-L/16 (imported from dinov3 repo)
-# Neck: ViTDetFPN (proper FPN for ViT features)
-# Head: Oriented R-CNN (rotated detection)
+# Backbone: Swin Transformer v1 Large
+#   - ImageNet-22k pretrained, window12 / input 384 (official microsoft weights).
+#   - depths=[2,2,18,2], num_heads=[6,12,24,48], embed_dims=192.
+#   - frozen_stages=-1  =>  FULL-PARAMETER fine-tuning (no stage is frozen).
+#   - with_cp=True      =>  gradient checkpointing on stage-2's 18 blocks to fit
+#     Swin-L at 800x800 on 80GB GPUs.
+#   - convert_weights=True => microsoft checkpoint key -> mmdet key conversion.
+# Neck: standard 5-level FPN (P2..P6) on the 4 Swin pyramid stages.
+# Head: Oriented R-CNN (rotated RPN + rotated RoI refinement).
 #
-# v2 improvements (2026-06-15):
-#   1. RCNN NMS iou_thr: 0.1 → 0.5 (fixed overly aggressive suppression)
-#   2. RoI feat size: 7×7 → 14×14 (better small object detection)
-#   3. Label Smoothing: 0.1 (reduces overfitting)
-#   4. Class-balanced weights: rare classes (dam, trainstation) weighted higher
-#   5. Stronger augmentation: Albu (noise, blur, color jitter, CLAHE)
-#      + more aggressive PhotoMetricDistortion
+# DATA split (full supervision, no leakage):
+#   * train = DIOR-R train + val merged  (~11.7k images, via list ann_file).
+#   * val   = DIOR-R test split          (periodic eval + save_best selection).
+#   * test  = DIOR-R test split          (final tools/test.py evaluation).
 #
-# Baseline config:
-#   1. img_size=800 (DIOR images are ~800×800)
-#   2. 300-epoch training with cosine annealing
-#   3. EMA for smoother convergence
-#   4. Multi-scale training [600, 800, 1000]
-#   5. Frozen stages=0: all backbone params trained
+# Augmentation: oriented-aware RandomFlip + PolyRandomRotate + PhotoMetricDistortion
+# + Albu (denoising/blur/color). DIOR is north-up, so random in-plane rotation
+# enforces orientation invariance (standard +1~3 mAP for oriented detection).
+#
+# Optimization (Swin detection standard):
+#   - AdamW lr=1e-4, weight_decay=0.05; backbone lr_mult=0.1 (=> 1e-5 gentle FT).
+#   - norm layers & biases get zero weight decay (norm_decay_mult / bias_decay_mult).
+#   - CosineAnnealing + 500-iter linear warmup, EMA(0.9998), fp16, grad_clip 10.
+#
+# Usage:
+#   bash scripts/dist_train_trainval_swin_large.sh
 # =============================================================================
 
 _base_ = []
@@ -27,62 +35,79 @@ _base_ = []
 
 custom_imports = dict(
     imports=[
-        'models.backbones.dinov3_wrapper',
-        'models.necks.vitdet_fpn',
         'models.datasets.dior',
         'models.pipelines.albu_metadata',
     ],
     allow_failed_imports=False,
 )
 
+# ---- Swin-L architectural constants ----
+swin_embed_dims = 192
+swin_depths = [2, 2, 18, 2]
+swin_num_heads = [6, 12, 24, 48]
+# Swin pyramid: stride 4/8/16/32 -> channels 192/384/768/1536.
+swin_in_channels = [192, 384, 768, 1536]
+
+SWIN_PRETRAIN = (
+    '/mnt/htzzb2/00-model/00-hlj/swin_weights_large384_22k/'
+    'swin_large_patch4_window12_384_22k.pth'
+)
+
+angle_version = 'le90'
+num_classes = 20
+
 model = dict(
     type='OrientedRCNN',
-    # -------------------------- Backbone: DINOv3 ViT-B/16 ------------------------
-    # Official Meta DINOv3 ViT-Base imported from the dinov3 repository.
-    # Outputs 4 feature maps at embed_dim=768, stride=16.
-    # frozen_stages=0 means ALL backbone params are trained (critical for mAP!).
+    # -------------------------- Backbone: Swin-L -------------------------------
+    # frozen_stages=-1 => ALL parameters trainable (full-parameter fine-tuning).
     backbone=dict(
-        type='DinoVisionTransformerBackbone',
-        model_name='dinov3_vitl16',
-        pretrained=False,
-        layers_to_use=[5, 11, 17, 23],
+        type='SwinTransformer',
+        pretrain_img_size=384,
+        embed_dims=swin_embed_dims,
+        depths=swin_depths,
+        num_heads=swin_num_heads,
+        window_size=12,
+        mlp_ratio=4,
+        qkv_bias=True,
+        qk_scale=None,
+        patch_norm=True,
         out_indices=(0, 1, 2, 3),
-        use_layernorm=True,
-        frozen_stages=0,
-        init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth',
-        ),
+        with_cp=True,
+        convert_weights=True,
+        frozen_stages=-1,
+        drop_rate=0.,
+        attn_drop_rate=0.,
+        drop_path_rate=0.2,
+        init_cfg=dict(type='Pretrained', checkpoint=SWIN_PRETRAIN),
     ),
 
-    # -------------------------- Neck: ViTDetFPN ----------------------------------
-    # in_channels=1024 matches ViT-L embed_dim.
+    # -------------------------- Neck: 5-level FPN ------------------------------
+    # 4 Swin pyramid inputs -> FPN -> 5 outputs (P2..P6, extra conv on last input).
     neck=dict(
-        type='ViTDetFPN',
-        in_channels=1024,
+        type='FPN',
+        in_channels=swin_in_channels,
         out_channels=256,
-        num_outs=4,
         start_level=0,
-        add_extra_convs=False,
-        se_reduction=16,
-        norm_cfg=dict(type='GN', num_groups=32, requires_grad=True),
-        act_cfg=dict(type='GELU'),
+        add_extra_convs='on_input',
+        num_outs=5,
+        relu_before_extra_convs=True,
     ),
 
-    # -------------------------- RPN Head -----------------------------------------
+    # -------------------------- RPN Head (Oriented R-CNN) ----------------------
     rpn_head=dict(
         type='OrientedRPNHead',
         in_channels=256,
         feat_channels=256,
-        version='le90',
+        version=angle_version,
         anchor_generator=dict(
             type='AnchorGenerator',
             scales=[8],
             ratios=[0.5, 1.0, 2.0],
-            strides=[4, 8, 16, 32],
+            strides=[4, 8, 16, 32, 64],
         ),
         bbox_coder=dict(
             type='MidpointOffsetCoder',
-            angle_range='le90',
+            angle_range=angle_version,
             target_means=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             target_stds=[1.0, 1.0, 1.0, 1.0, 0.5, 0.5],
         ),
@@ -98,10 +123,7 @@ model = dict(
         ),
     ),
 
-    # -------------------------- ROI Head -----------------------------------------
-    # roi_feat_size=14 for better small object detection.
-    # class_weight uses inverse-sqrt frequency: rare classes (dam, trainstation)
-    # get higher weight, common classes (ship, vehicle) get lower weight.
+    # -------------------------- ROI Head (Oriented R-CNN) ----------------------
     roi_head=dict(
         type='OrientedStandardRoIHead',
         bbox_roi_extractor=dict(
@@ -120,10 +142,10 @@ model = dict(
             in_channels=256,
             fc_out_channels=1024,
             roi_feat_size=7,
-            num_classes=20,
+            num_classes=num_classes,
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
-                angle_range='le90',
+                angle_range=angle_version,
                 norm_factor=None,
                 edge_swap=True,
                 proj_xy=True,
@@ -144,7 +166,7 @@ model = dict(
         ),
     ),
 
-    # -------------------------- Training Config ----------------------------------
+    # -------------------------- Training Config --------------------------------
     train_cfg=dict(
         rpn=dict(
             assigner=dict(
@@ -194,7 +216,7 @@ model = dict(
         ),
     ),
 
-    # -------------------------- Testing Config -----------------------------------
+    # -------------------------- Testing Config ---------------------------------
     test_cfg=dict(
         rpn=dict(
             nms_pre=2000,
@@ -206,7 +228,7 @@ model = dict(
             nms_pre=2000,
             min_bbox_size=0,
             score_thr=0.05,
-            nms=dict(iou_thr=0.1),
+            nms=dict(type='nms', iou_thr=0.1),
             max_per_img=2000,
         ),
     ),
@@ -223,10 +245,10 @@ img_norm_cfg = dict(
     to_rgb=True,
 )
 
-# DIOR images are ~800×800 — no need for 1024 upscale
+# DIOR images are ~800x800.
 image_size = (800, 800)
 
-# Multi-scale training scales (centered around 800)
+# Multi-scale training around the native DIOR resolution.
 train_scales = [(600, 600), (800, 800), (1000, 1000)]
 
 train_pipeline = [
@@ -243,6 +265,8 @@ train_pipeline = [
         direction=['horizontal', 'vertical', 'diagonal'],
         version='le90',
     ),
+    # ---- Rotation augmentation (oriented-aware) ----
+    # rotate_ratio=0.5: rotate half the images by a random angle in [-180, 180].
     dict(
         type='PolyRandomRotate',
         rotate_ratio=0.5,
@@ -283,7 +307,6 @@ train_pipeline = [
     ),
 ]
 
-# Test pipeline (single-scale, no flip for safe evaluation)
 test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(
@@ -311,20 +334,29 @@ test_pipeline = [
 data = dict(
     samples_per_gpu=4,
     workers_per_gpu=4,
+    # ---- train: DIOR-R train + val merged (~11.7k images) ----
     train=dict(
         type=dataset_type,
-        ann_file=data_root + 'train/labelTxt/',
-        img_prefix=data_root + 'train/images/',
+        ann_file=[
+            data_root + 'train/labelTxt/',
+            data_root + 'val/labelTxt/',
+        ],
+        img_prefix=[
+            data_root + 'train/images/',
+            data_root + 'val/images/',
+        ],
         pipeline=train_pipeline,
         version='le90',
     ),
+    # ---- val: DIOR-R test split, used for periodic eval + save_best ----
     val=dict(
         type=dataset_type,
-        ann_file=data_root + 'val/labelTxt/',
-        img_prefix=data_root + 'val/images/',
+        ann_file=data_root + 'test/labelTxt/',
+        img_prefix=data_root + 'test/images/',
         pipeline=test_pipeline,
         version='le90',
     ),
+    # ---- test: DIOR-R test split, used by tools/test.py for final eval ----
     test=dict(
         type=dataset_type,
         ann_file=data_root + 'test/labelTxt/',
@@ -334,6 +366,7 @@ data = dict(
     ),
 )
 
+# Evaluate on the test split periodically and keep the best-by-mAP checkpoint.
 evaluation = dict(
     interval=3,
     metric='mAP',
@@ -344,6 +377,11 @@ evaluation = dict(
 
 # ========================== Optimization ==========================
 
+# AdamW + Swin detection grouping:
+#   - whole backbone lr_mult=0.1 => main backbone 1e-5 gentle fine-tuning;
+#   - norm layers (LayerNorm/BatchNorm/GroupNorm) decay_mult=0.0 (via
+#     norm_decay_mult, auto-detected);
+#   - all biases decay_mult=0.0 (bias_decay_mult).
 optimizer = dict(
     type='AdamW',
     lr=1e-4,
@@ -351,8 +389,7 @@ optimizer = dict(
     weight_decay=0.05,
     paramwise_cfg=dict(
         custom_keys={
-            'backbone.backbone': dict(lr_mult=0.25),
-            'backbone.layer_norms': dict(lr_mult=1.0),
+            'backbone': dict(lr_mult=0.1),
         },
         norm_decay_mult=0.0,
         bias_decay_mult=0.0,
@@ -384,9 +421,8 @@ log_config = dict(
     ],
 )
 
-# Exponential Moving Average for smoother convergence (~+0.5-1.0 mAP)
 custom_hooks = [
-    dict(type='EMAHook', momentum=0.999, priority='ABOVE_NORMAL'),
+    dict(type='EMAHook', momentum=0.9998, priority='ABOVE_NORMAL'),
 ]
 
 fp16 = dict(loss_scale='dynamic')
