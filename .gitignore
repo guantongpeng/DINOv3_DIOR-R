@@ -12,7 +12,7 @@ eggs/
 # Virtual environments
 .venv/
 venv/
-env/
+/env/
 
 # IDE
 .idea/
