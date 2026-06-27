@@ -1,43 +1,55 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Oriented R-CNN + DINOv3 ViT-L/16 + ViTDetFPN (DIOR-R)
+# Oriented R-CNN + DINOv3 ViT-B/16 + ViTDetFPN (MULTI-LAYER) — TRAINVAL + rot aug
 # =============================================================================
-# Config: configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
+# Config: configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_trainval_dior.py
+#
+# Multi-layer ViTDetFPN (layers_to_use=[3,5,8,11], the ~0.71+ recipe) trained on
+# the FULL DIOR-R trainval pool (train + val merged) with rotation augmentation
+# (PolyRandomRotate). The held-out TEST split is used for periodic eval /
+# save_best model selection and for the final tools/test.py run.
+#
+# NOTE on eval cost: val == test here, so every evaluation runs over the full
+# (~11.7k-image) test set. Use EVAL_INTERVAL to control how often this happens.
 #
 # Usage:
-#   bash scripts/dist_train.sh
+#   bash scripts/orcnn_vitb_fpn_trainval.sh
 #
 # Common overrides (environment variables):
 #   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7   # which GPUs to use
-#   SAMPLES_PER_GPU=4                       # batch size per GPU
+#   SAMPLES_PER_GPU=16                      # batch size per GPU
 #   MAX_EPOCHS=300                          # schedule length
-#   MASTER_PORT=29504                       # DDP port (change if 'port in use')
+#   EVAL_INTERVAL=3                         # epochs between test-set evals
+#   MASTER_PORT=29509                       # DDP port (change if 'port in use')
 #   RESUME=work_dirs/.../latest.pth         # resume from a checkpoint
 #   WORK_DIR=work_dirs/my_run               # custom output dir
 #
 # Examples:
-#   bash scripts/dist_train.sh
-#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/dist_train.sh
-#   RESUME=work_dirs/.../latest.pth bash scripts/dist_train.sh
+#   bash scripts/orcnn_vitb_fpn_trainval.sh
+#   CUDA_VISIBLE_DEVICES=0,1 SAMPLES_PER_GPU=8 bash scripts/orcnn_vitb_fpn_trainval.sh
+#   EVAL_INTERVAL=5 bash scripts/orcnn_vitb_fpn_trainval.sh     # less frequent (cheaper) eval
+#   RESUME=work_dirs/.../latest.pth bash scripts/orcnn_vitb_fpn_trainval.sh
 # =============================================================================
 
 set -e
 
 # ----------------------------- configuration --------------------------------
-CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py'
+CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_trainval_dior.py'
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '
 ' | wc -l)
-MASTER_PORT=${MASTER_PORT:-29504}
-SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-4}
+MASTER_PORT=${MASTER_PORT:-29509}
+SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-16}
 MAX_EPOCHS=${MAX_EPOCHS:-300}
-WORK_DIR=${WORK_DIR:-"work_dirs/oriented_rcnn_dinov3_fpn_dior_$(date +%Y%m%d_%H%M%S)"}
+EVAL_INTERVAL=${EVAL_INTERVAL:-3}
+WORK_DIR=${WORK_DIR:-"work_dirs/oriented_rcnn_dinov3_vitb_fpn_trainval_dior_$(date +%Y%m%d_%H%M%S)"}
 
 # Tuning knobs passed to the config at runtime
 EXTRA_CFG=""
 EXTRA_CFG="${EXTRA_CFG} data.samples_per_gpu=${SAMPLES_PER_GPU}"
 EXTRA_CFG="${EXTRA_CFG} runner.max_epochs=${MAX_EPOCHS}"
+EXTRA_CFG="${EXTRA_CFG} evaluation.interval=${EVAL_INTERVAL}"
 
 # ----------------------------- environment ----------------------------------
 export OMP_NUM_THREADS=1
@@ -73,10 +85,11 @@ if [ -n "${RESUME}" ]; then
 fi
 
 echo "================================================"
-echo "Oriented R-CNN + DINOv3 ViT-L/16 + ViTDetFPN"
+echo "Oriented R-CNN + DINOv3 ViT-B/16 + ViTDetFPN (TRAINVAL, multi-layer + rot aug)"
+echo "Data       : train + val merged  |  eval on test split"
 echo "GPUs       : ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS})"
 echo "Batch/GPU  : ${SAMPLES_PER_GPU}   (effective batch = $((SAMPLES_PER_GPU * NUM_GPUS)))"
-echo "Epochs     : ${MAX_EPOCHS}"
+echo "Epochs     : ${MAX_EPOCHS}   (eval every ${EVAL_INTERVAL})"
 echo "Work dir   : ${WORK_DIR}"
 [ -n "${RESUME}" ] && echo "Resuming from: ${RESUME}"
 echo "------------------------------------------------"
@@ -87,9 +100,9 @@ eval "${CMD} 2>&1 | tee ${WORK_DIR}/train.log"
 
 echo ""
 echo "Training finished. Results in: ${WORK_DIR}"
-echo "Best checkpoint: ${WORK_DIR}/best_mAP*.pth"
+echo "Best checkpoint (by test mAP): ${WORK_DIR}/best_mAP*.pth"
 echo ""
-echo "Test on the official DIOR-R test set:"
-echo "  CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py' \\"
+echo "Final eval on the official DIOR-R test set (no aug, classwise AP):"
+echo "  CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_trainval_dior.py' \\"
 echo "  TEST_CKPT=${WORK_DIR}/best_mAP_epoch_*.pth \\"
 echo "  WORK_DIR=${WORK_DIR} SAVE_VIS=0 NUM_GPUS=${NUM_GPUS} bash scripts/test.sh"

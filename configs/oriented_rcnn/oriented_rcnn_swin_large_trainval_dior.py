@@ -26,7 +26,7 @@
 #   - CosineAnnealing + 500-iter linear warmup, EMA(0.9998), fp16, grad_clip 10.
 #
 # Usage:
-#   bash scripts/dist_train_trainval_swin_large.sh
+#   bash scripts/orcnn_swin_large_trainval.sh
 # =============================================================================
 
 _base_ = []

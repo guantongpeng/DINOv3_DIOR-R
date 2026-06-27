@@ -299,7 +299,9 @@ def main():
     parser.add_argument(
         '--checkpoint_path',
         type=str,
-        default='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
+        default=os.path.join(
+            _proj_root, 'data/weights',
+            'dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth'),
         help='Path to the DINOv3 checkpoint .pth file',
     )
     args = parser.parse_args()

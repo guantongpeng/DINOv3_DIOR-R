@@ -74,6 +74,11 @@ class RVSADetector(RotatedBaseDetector):
                       gt_labels,
                       gt_bboxes_ignore=None,
                       **kwargs):
+        # NOTE the batched image size information is needed by the RVSA head to
+        # build attention masks (mirrors BaseDetector.forward_train).
+        batch_input_shape = tuple(img.size()[-2:])
+        for img_meta in img_metas:
+            img_meta['batch_input_shape'] = batch_input_shape
         x = self.extract_feat(img)
         outs = self.bbox_head(x, img_metas)
         loss_inputs = outs + (gt_bboxes, gt_labels, img_metas)
@@ -81,6 +86,9 @@ class RVSADetector(RotatedBaseDetector):
         return losses
 
     def simple_test(self, img, img_metas, **kwargs):
+        batch_input_shape = tuple(img.size()[-2:])
+        for img_meta in img_metas:
+            img_meta['batch_input_shape'] = batch_input_shape
         x = self.extract_feat(img)
         outs = self.bbox_head(x, img_metas)
         bbox_list = self.bbox_head.get_bboxes(

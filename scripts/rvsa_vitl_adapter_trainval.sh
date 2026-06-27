@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Two-stage training: Oriented R-CNN + DINOv3 ViT-L/16 + ViT-Adapter (DIOR-R)
+# Two-stage training: RVSA + DINOv3 ViT-L/16 + ViT-Adapter (DIOR-R, TRAINVAL)
 # =============================================================================
-# ViT-L/16 (1024-d, 24 blocks) with the DINOv3 ViT-Adapter. Pretrained weights:
+# ViT-L/16 (1024-d, 24 blocks) + ViT-Adapter backbone, feeding the end-to-end
+# RVSA head (VSA Transformer + RotatedHungarianAssigner). Pretrained weights:
 #   data/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
 #
-# Stage 1: frozen ViT  -> train adapter (SPM + deformable interactions) + RPN + RoI
+# Stage 1: frozen ViT  -> train adapter (SPM + deformable interactions) + FPN + RVSA head
 # Stage 2: load stage-1 best, unfreeze ViT, end-to-end fine-tune (backbone @ 0.1x lr)
 #
-# lr is calibrated for effective batch 128 (8 GPUs x samples_per_gpu=16, the
-# script default). If you change SAMPLES_PER_GPU / NUM_GPUS, re-scale S1_LR /
-# S2_LR proportionally (e.g. batch 64 -> halve them).
+# Trains on the FULL DIOR-R trainval pool (train + val merged); the held-out
+# TEST split is used for periodic eval / save_best and the final tools/test.py.
 #
 # Usage:
-#   bash scripts/dist_train_adapter_twostage_vitl.sh                      # stage1 -> stage2
-#   STAGE=1 bash scripts/dist_train_adapter_twostage_vitl.sh              # stage 1 only
+#   bash scripts/rvsa_vitl_adapter_trainval.sh                      # stage1 -> stage2
+#   STAGE=1 bash scripts/rvsa_vitl_adapter_trainval.sh              # stage 1 only
 #   STAGE=2 STAGE1_CKPT=work_dirs/.../best_mAP_epoch_30.pth \
-#       bash scripts/dist_train_adapter_twostage_vitl.sh                  # stage 2 only
-#   STAGE=1 RESUME=1 WORK_DIR=work_dirs/.../oriented_rcnn_dinov3_vitl_adapter_dior_<ts> \
-#       bash scripts/dist_train_adapter_twostage_vitl.sh                  # resume interrupted stage 1
+#       bash scripts/rvsa_vitl_adapter_trainval.sh                  # stage 2 only
+#   STAGE=1 RESUME=1 WORK_DIR=work_dirs/.../rvsa_dinov3_vitl_adapter_trainval_dior_<ts> \
+#       bash scripts/rvsa_vitl_adapter_trainval.sh                  # resume interrupted stage 1
 #
 # Common overrides (environment variables):
 #   CUDA_VISIBLE_DEVICES=0,1,2,3   # GPUs to use
-#   SAMPLES_PER_GPU=4              # batch/GPU (ViT-L is memory-heavy; lower if OOM)
+#   SAMPLES_PER_GPU=4              # batch/GPU (ViT-L + Adapter is memory-heavy; lower if OOM)
 #   S1_EPOCHS=36                   # stage-1 schedule length
 #   S2_EPOCHS=24                   # stage-2 schedule length
 #   EVAL_INTERVAL=3                # epochs between test-set evals
-#   MASTER_PORT=29511              # DDP port
+#   MASTER_PORT=29512              # DDP port
 #   WORK_DIR=work_dirs/adapter_run # shared output root (stage1/ and stage2/ inside)
 #   STAGE1_CKPT=<path>             # explicit stage-1 ckpt for stage 2 (else: best)
-#   S1_LR=4e-4 / S2_LR=2e-4        # override base lr (defaults assume batch 128)
+#   S1_LR=4e-4 / S2_LR=2e-4        # override base lr
 #   RESUME=1                       # resume interrupted stage from <WORK_DIR>/<stage>/latest.pth
 #                            (requires WORK_DIR = the EXISTING run dir, not a fresh timestamp)
 # =============================================================================
@@ -37,24 +37,24 @@
 set -e
 
 # ----------------------------- configuration --------------------------------
-CONFIG_S1='configs/oriented_rcnn/oriented_rcnn_dinov3_vitl_adapter_stage1_dior.py'
-CONFIG_S2='configs/oriented_rcnn/oriented_rcnn_dinov3_vitl_adapter_stage2_dior.py'
+CONFIG_S1='configs/rvsa/rvsa_dinov3_vitl_adapter_stage1_trainval_dior.py'
+CONFIG_S2='configs/rvsa/rvsa_dinov3_vitl_adapter_stage2_trainval_dior.py'
 
 STAGE=${STAGE:-all}                 # all | 1 | 2
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '
 ' | wc -l)
-MASTER_PORT=${MASTER_PORT:-29511}
-SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-8}   # ViT-L/16 + Adapter is memory-heavy; lower if OOM
+MASTER_PORT=${MASTER_PORT:-29512}
+SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-4}   # ViT-L/16 + Adapter is memory-heavy; lower if OOM
 S1_EPOCHS=${S1_EPOCHS:-36}
-S2_EPOCHS=${S2_EPOCHS:-50}
-EVAL_INTERVAL=${EVAL_INTERVAL:-4}
+S2_EPOCHS=${S2_EPOCHS:-48}
+EVAL_INTERVAL=${EVAL_INTERVAL:-3}
 STAGE1_CKPT=${STAGE1_CKPT:-}
 RESUME=${RESUME:-0}                 # 1 = resume interrupted stage from <WORK_DIR>/<stage>/latest.pth
-S1_LR=${S1_LR:-}                    # override stage-1 base lr (default 4e-4 in config for batch 128)
-S2_LR=${S2_LR:-}                    # override stage-2 base lr (default 2e-4 in config for batch 128)
-WORK_DIR=${WORK_DIR:-"work_dirs/oriented_rcnn_dinov3_vitl_adapter_dior_$(date +%Y%m%d_%H%M%S)"}
- 
+S1_LR=${S1_LR:-2e-4}                    # override stage-1 base lr (default 4e-4 in config)
+S2_LR=${S2_LR:-1e-4}                    # override stage-2 base lr (default 2e-4 in config)
+WORK_DIR=${WORK_DIR:-"work_dirs/rvsa_dinov3_vitl_adapter_trainval_dior_$(date +%Y%m%d_%H%M%S)"}
+
 S1_DIR="${WORK_DIR}/stage1"
 S2_DIR="${WORK_DIR}/stage2"
 
@@ -124,7 +124,7 @@ if [ "${STAGE}" = "all" ] || [ "${STAGE}" = "1" ]; then
         EXTRA_S1="${EXTRA_S1} optimizer.lr=${S1_LR}"
     fi
 
-    echo "########## STAGE 1: frozen DINOv3 ViT ##########"
+    echo "########## STAGE 1: RVSA + frozen DINOv3 ViT ##########"
     echo "Mode      : ${S1_MODE}"
     echo "GPUs      : ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS})"
     echo "Batch/GPU : ${SAMPLES_PER_GPU} (effective = $((SAMPLES_PER_GPU * NUM_GPUS)))"
@@ -170,7 +170,7 @@ if [ "${STAGE}" = "all" ] || [ "${STAGE}" = "2" ]; then
         EXTRA_S2="${EXTRA_S2} optimizer.lr=${S2_LR}"
     fi
 
-    echo "########## STAGE 2: end-to-end fine-tune ##########"
+    echo "########## STAGE 2: RVSA end-to-end fine-tune ##########"
     echo "GPUs       : ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS})"
     echo "Batch/GPU  : ${SAMPLES_PER_GPU} (effective = $((SAMPLES_PER_GPU * NUM_GPUS)))"
     echo "Epochs     : ${S2_EPOCHS} (eval every ${EVAL_INTERVAL})"

@@ -27,7 +27,7 @@ DataLoader worker (pid 1274471) is killed by signal: Aborted
 配置文件中 `mp_start_method = 'fork'`。`fork()` 后子进程继承父进程的 CUDA 上下文，但 CUDA **不支持 fork**，子进程中任何 CUDA 操作（包括 Tensor 析构）都会导致崩溃。
 
 ### 修复
-**文件**: `configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py`
+**文件**: `configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py`
 
 ```diff
 - mp_start_method = 'fork'
@@ -131,7 +131,7 @@ bboxes, scores, labels = bboxes[inds], scores[inds], labels[inds]
 
 | 文件 | 修改内容 |
 |------|----------|
-| `configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py` | `mp_start_method` 改为 `spawn` |
+| `configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py` | `mp_start_method` 改为 `spawn` |
 | `tools/train.py` | 添加两个 monkey-patch（`_get_stream` + `_use_replicated_tensor_module`） |
 | `mmrotate/mmrotate/core/post_processing/bbox_nms_rotated.py` | `torch.arange` 添加 `device` 参数 |
 

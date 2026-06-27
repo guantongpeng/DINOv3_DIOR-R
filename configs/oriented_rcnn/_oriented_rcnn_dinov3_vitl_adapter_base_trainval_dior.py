@@ -60,7 +60,7 @@ model = dict(
         with_cp=True,               # gradient checkpointing in extractors
         bf16_vit=True,              # bfloat16 autocast for the frozen ViT
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth',
+            checkpoint='data/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth',
         ),
     ),
 
@@ -248,7 +248,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    # Matches dist_train_adapter_twostage.sh default (samples_per_gpu=16, 8 GPUs ->
+    # Matches orcnn_vitb_adapter_trainval.sh default (samples_per_gpu=16, 8 GPUs ->
     # effective batch 128). The lr in the stage1/stage2 configs is calibrated for
     # batch 128; re-scale lr if you change GPU count or this value.
     samples_per_gpu=4,

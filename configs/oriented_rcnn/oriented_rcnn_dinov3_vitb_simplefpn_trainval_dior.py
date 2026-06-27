@@ -15,7 +15,7 @@
 #
 # Model = proven ViTDet recipe (SimpleFeaturePyramid on the last ViT block) +
 #         Oriented R-CNN head. Inherits the clean-augmentation choices from the
-#         held-out-val config (oriented_rcnn_dinov3_vitb_simplefpn_dior.py):
+#         held-out-val config (oriented_rcnn_dinov3_vitb_simplefpn_train_dior.py):
 #           - backbone outputs ONLY the last block (layers_to_use=[11])
 #           - single mild PhotoMetricDistortion, no double color jitter
 #           - uniform CE (no hand-tuned class weights)
@@ -55,7 +55,7 @@ model = dict(
         use_layernorm=False,
         frozen_stages=0,
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
+            checkpoint='data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
         ),
     ),
 

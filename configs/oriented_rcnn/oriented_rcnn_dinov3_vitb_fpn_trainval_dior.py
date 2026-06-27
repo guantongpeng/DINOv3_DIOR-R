@@ -2,7 +2,7 @@
 # Oriented R-CNN + DINOv3 ViT-B/16 + ViTDetFPN (MULTI-LAYER) — TRAINVAL run
 # =============================================================================
 # Inherits the proven multi-layer ViTDetFPN recipe
-# (configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py), and changes:
+# (configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_train_dior.py), and changes:
 #
 #   1. DATA split:
 #      * train = DIOR-R train + val merged (ConcatDataset, ~11.7k images).
@@ -23,10 +23,10 @@
 # Everything else (oriented R-CNN head, class weights, EMA, AdamW) is inherited.
 #
 # Usage:
-#   bash scripts/dist_train_trainval_vitb_fpn.sh
+#   bash scripts/orcnn_vitb_fpn_trainval.sh
 # =============================================================================
 
-_base_ = ['./oriented_rcnn_dinov3_vitb_fpn_dior.py']
+_base_ = ['./oriented_rcnn_dinov3_vitb_fpn_train_dior.py']
 
 # ===================== Train pipeline (with rotation) =====================
 # Redefined here so we can insert PolyRandomRotate. img_norm_cfg / train_scales

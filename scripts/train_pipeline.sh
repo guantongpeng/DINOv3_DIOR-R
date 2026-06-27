@@ -1,0 +1,2 @@
+bash scripts/rvsa_vitl_adapter_trainval.sh
+bash scripts/fcos_vitl_adapter_trainval.sh

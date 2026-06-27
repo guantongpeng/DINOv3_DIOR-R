@@ -1,8 +1,13 @@
 # ViT-Adapter 详解：原理、实现与对下游任务的影响
 
-> 适用范围：本项目的 DINOv3 ViT-B/16 + Oriented R-CNN (DIOR-R) 流程
+> 适用范围：本项目所有 **DINOv3 ViT-Adapter** 流程，骨干为冻结 DINOv3 ViT-L/16（ViT-B/16 可选）。
+> 目前已对接三类检测头，共用同一套 `DINOv3ViTAdapter` 骨干，便于横向对比：
+> - **Oriented R-CNN**（两阶段锚框）：`configs/oriented_rcnn/oriented_rcnn_dinov3_vit{b,l}_adapter_stage{1,2}_trainval_dior.py`
+> - **Rotated FCOS**（单阶段无锚框）：`configs/fcos/rotated_fcos_dinov3_vitl_adapter_stage{1,2}_trainval_dior.py`
+> - **RVSA**（Transformer 集合预测）：`configs/rvsa/rvsa_dinov3_vitl_adapter_stage{1,2}_trainval_dior.py`
+>
 > 相关代码：`models/backbones/dinov3_vit_adapter.py`
-> 相关配置：`configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_adapter_stage{1,2}_dior.py`
+> 本文示例配置：`configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_adapter_stage{1,2}_trainval_dior.py`
 
 ## 目录
 
@@ -257,10 +262,17 @@ ViT-Adapter 的 SPM 需要**原始图像**（不是特征图），而 mmdet 的 
 
 ### 7.2 与官方 DETR 检测 eval 的区别
 
-DINOv3 官方检测 eval 用的是 **PlainDETR**（单阶段 transformer 检测器），其 backbone 也是冻结 ViT + 可选 transformer encoder。本项目是 **Oriented R-CNN（两阶段）**，故：
-- 不用 DETR 的 Hungarian 匹配 / Focal Loss / 混合匹配（那是单阶段专属）；
-- 用 ViT-Adapter 产出金字塔后，接标准 RPN + RoI（MaxIoUAssigner + CE + DeltaXYWH）。
-- ViT-Adapter 扮演的角色等价于 DETR 路径里"冻结 ViT + 额外 encoder"，但更适合两阶段 CNN 检测头。
+DINOv3 官方检测 eval 用的是 **PlainDETR**（单阶段 transformer 检测器），其 backbone 也是冻结 ViT + 可选 transformer encoder。
+本项目把 ViT-Adapter 产出金字塔后**对接多种检测头**，三者复用同一 adapter 骨干：
+
+| 检测头 | 阶段 | 匹配/损失 | adapter 之后接什么 |
+|--------|------|-----------|--------------------|
+| **Oriented R-CNN** | 两阶段 | MaxIoUAssigner + CE + DeltaXYWH（标准 RPN + RoI） | FPN → RPN → RoI |
+| **Rotated FCOS** | 单阶段无锚框 | 无 assigner；Focal + GIoU + L1(angle) + centerness | FPN(5级) → FCOS head |
+| **RVSA** | 端到端 Transformer | **RotatedHungarianAssigner**（Focal + RotatedL1 + RotatedIoU） | FPN → VSATransformer |
+
+> 因此 adapter 的角色等价于 DETR 路径里「冻结 ViT + 额外 encoder」，但更适合 CNN/Transformer 时代的多种旋转检测头。
+> 注意：FCOS 是无锚框头，**不用** `RegZeroInitHook`（RoI 专用）与 RPN/RoI 相关组件；RVSA 端到端同理。
 
 ---
 
@@ -367,7 +379,7 @@ ViT-Adapter 的预期收益：
 
 ## 10. 调参与排错速查
 
-### 关键超参（`_oriented_rcnn_dinov3_vitb_adapter_base_dior.py`）
+### 关键超参（`_oriented_rcnn_dinov3_vitb_adapter_base_trainval_dior.py`）
 
 | 参数 | 默认 | 说明 |
 |------|------|------|

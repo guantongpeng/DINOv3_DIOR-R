@@ -21,9 +21,15 @@
 | 检测器 | 类型 | 配置示例 |
 |--------|------|----------|
 | Oriented R-CNN | 两阶段（旋转 RPN + RoI） | `configs/oriented_rcnn/*_dior.py` |
-| RoI Transformer | 两阶段（水平 RPN + 旋转细化，KFIoU） | `configs/roi_trans/roi_trans_dinov3_vitb_simplefpn_kfiou_dior.py` |
-| RVSA | Transformer（VSA 注意力，集合预测） | `configs/rvsa/rvsa_dinov3_vitl_dior.py` |
-| YOLO26 | 单阶段无锚框（O2M+O2O 双头，NMS-free） | `configs/yolo26/yolo26_dinov3_fpn_dior.py` |
+| Rotated FCOS | 单阶段无锚框（逐像素 l/t/r/b + 角度 + centerness） | `configs/fcos/rotated_fcos_dinov3_vitl_adapter_stage{1,2}_trainval_dior.py` |
+| RoI Transformer | 两阶段（水平 RPN + 旋转细化，KFIoU） | `configs/roi_trans/roi_trans_dinov3_vitb_simplefpn_kfiou_train_dior.py` |
+| RVSA | Transformer（VSA 注意力，集合预测） | `configs/rvsa/rvsa_dinov3_vitl_trainval_dior.py` |
+| YOLO26 | 单阶段无锚框（O2M+O2O 双头，NMS-free） | `configs/yolo26/yolo26_dinov3_fpn_train_dior.py` |
+
+> **骨干**：默认为 **DINOv3 ViT-B/L**（自监督）。另提供 **Swin Transformer v1-L**（ImageNet-22k 有监督）
+> 作为对照基线（`configs/oriented_rcnn/oriented_rcnn_swin_large_trainval_dior.py`，全参微调），
+> 用于区分「检测头增益」与「自监督骨干增益」。ViT-Adapter 系（orcnn/rvsa/fcos）把冻结 ViT 经
+> 可变形注意力重建为多尺度金字塔，详见 [vit_adapter_explained.md](vit_adapter_explained.md)。
 
 下文以最常用的 **Oriented R-CNN + ViTDetFPN** 流程为主线讲解数据流与各组件；其他检测器共用相同的 Backbone/Neck。
 
@@ -150,7 +156,10 @@ class ViTDinoV3(BaseModule):
 | YOLO26 ViT-B | `dinov3_vitb16` (12 blocks) | `[3, 5, 8, 11]` |
 | Oriented R-CNN ViT-L | `dinov3_vitl16` (24 blocks) | `[5, 11, 17, 23]` |
 | RVSA ViT-L | `dinov3_vitl16` (24 blocks) | `[5, 11, 17, 23]` |
+| Rotated FCOS ViT-L（ViT-Adapter） | `dinov3_vitl16` (24 blocks) | `[5, 11, 17, 23]` |
+| ViT-Adapter 系列（orcnn/rvsa/fcos, ViT-B） | `dinov3_vitb16` (12 blocks) | `[2, 5, 8, 11]` |
 | SimpleFPN 配置 | (仅最后一层) | `[11]` |
+| Swin-Large（对照基线） | Swin v1-L（4 个 stage） | `out_indices=(0,1,2,3)` 天然多尺度 |
 
 以 ViT-B 的 `[3, 5, 8, 11]` 为例，从浅到深覆盖：
 
@@ -218,6 +227,11 @@ frozen_stages=12: 冻结整个ViT（只训练neck和检测头）
 | `vit_base_patch16_dinov3` | 768 | 12 | ~86M | 标准检测（本项目使用） |
 | `vit_large_patch16_dinov3` | 1024 | 24 | ~304M | 高精度需求 |
 | `vit_huge_plus_patch16_dinov3` | 1280 | 32 | ~632M | 极致性能 |
+
+> **对照基线骨干（非 DINOv3）**：`oriented_rcnn_swin_large_trainval_dior.py` 使用 **Swin Transformer v1-L**
+> （ImageNet-22k、window12/384、`frozen_stages=-1` 全参微调），输出天然多尺度的 4 个 stage
+> （stride 4/8/16/32，通道 192/384/768/1536），直接接标准 5 级 FPN。用于与自监督 DINOv3 ViT
+> 对比，区分「检测头增益」与「骨干增益」。
 
 ---
 
@@ -555,13 +569,13 @@ DOTA txt → load_annotations() → poly2obb_np() → OBB格式
 
 ```bash
 # 分布式训练 (6 GPU)
-bash scripts/dist_train.sh
+bash scripts/orcnn_vitl_fpn_train.sh
 
 # 等效命令
 CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python -m torch.distributed.run \
     --nproc_per_node=6 --master_port=29502 \
     tools/train.py \
-    configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
+    configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py
 ```
 
 | 配置项 | 值 |
@@ -598,5 +612,8 @@ timm >= 1.0
 ### 8.4 分布式测试
 
 ```bash
-bash scripts/dist_test.sh
+# 单脚本自动选卡 / 多卡；用 CONFIG/WORK_DIR/TEST_CKPT 指定模型
+CONFIG=configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_train_dior.py \
+WORK_DIR=work_dirs/... TEST_CKPT=work_dirs/.../best_mAP_epoch_*.pth \
+CUDA_VISIBLE_DEVICES=0,1,2,3 SAVE_VIS=0 bash scripts/test.sh
 ```

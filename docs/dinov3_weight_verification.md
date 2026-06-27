@@ -131,7 +131,7 @@ INFO - DINOv3 backbone loaded with local checkpoint weights: data/dinov3_vitb16_
 
 ## 4. 配置文件分析
 
-### 4.1 DIOR-R 配置 (`oriented_rcnn_dinov3_fpn_dior.py`)
+### 4.1 DIOR-R 配置 (`oriented_rcnn_dinov3_fpn_train_dior.py`)
 
 | 设置项 | 值 | 状态 |
 |--------|----|------|
@@ -162,7 +162,7 @@ python tools/verify_dinov3_weights.py
 
 # 使用指定的配置文件验证
 python tools/verify_dinov3_weights.py \
-    --config configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
+    --config configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py
 
 # 使用指定的 checkpoint 文件验证
 python tools/verify_dinov3_weights.py \

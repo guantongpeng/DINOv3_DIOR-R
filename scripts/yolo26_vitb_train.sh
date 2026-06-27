@@ -1,38 +1,38 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Oriented R-CNN + DINOv3 ViT-B/16 + ViTDetFPN (DIOR-R)
+# YOLO26 + DINOv3 ViT-B/16 (DIOR-R)
 # =============================================================================
-# Config: configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py
+# Config: configs/yolo26/yolo26_dinov3_fpn_train_dior.py
 #
 # Usage:
-#   bash scripts/dist_train_vitb.sh
+#   bash scripts/yolo26_vitb_train.sh
 #
 # Common overrides (environment variables):
 #   CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7   # which GPUs to use
 #   SAMPLES_PER_GPU=16                      # batch size per GPU
-#   MAX_EPOCHS=300                          # schedule length
-#   MASTER_PORT=29505                       # DDP port (change if 'port in use')
+#   MAX_EPOCHS=200                          # schedule length
+#   MASTER_PORT=29506                       # DDP port (change if 'port in use')
 #   RESUME=work_dirs/.../latest.pth         # resume from a checkpoint
 #   WORK_DIR=work_dirs/my_run               # custom output dir
 #
 # Examples:
-#   bash scripts/dist_train_vitb.sh
-#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/dist_train_vitb.sh
-#   RESUME=work_dirs/.../latest.pth bash scripts/dist_train_vitb.sh
+#   bash scripts/yolo26_vitb_train.sh
+#   CUDA_VISIBLE_DEVICES=0,1 bash scripts/yolo26_vitb_train.sh
+#   RESUME=work_dirs/.../latest.pth bash scripts/yolo26_vitb_train.sh
 # =============================================================================
 
 set -e
 
 # ----------------------------- configuration --------------------------------
-CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py'
+CONFIG='configs/yolo26/yolo26_dinov3_fpn_train_dior.py'
 
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '
 ' | wc -l)
-MASTER_PORT=${MASTER_PORT:-29505}
+MASTER_PORT=${MASTER_PORT:-29506}
 SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-16}
-MAX_EPOCHS=${MAX_EPOCHS:-300}
-WORK_DIR=${WORK_DIR:-"work_dirs/oriented_rcnn_dinov3_vitb_fpn_dior_$(date +%Y%m%d_%H%M%S)"}
+MAX_EPOCHS=${MAX_EPOCHS:-200}
+WORK_DIR=${WORK_DIR:-"work_dirs/yolo26_dinov3_fpn_train_dior_$(date +%Y%m%d_%H%M%S)"}
 
 # Tuning knobs passed to the config at runtime
 EXTRA_CFG=""
@@ -73,7 +73,7 @@ if [ -n "${RESUME}" ]; then
 fi
 
 echo "================================================"
-echo "Oriented R-CNN + DINOv3 ViT-B/16 + ViTDetFPN"
+echo "YOLO26 + DINOv3 ViT-B/16"
 echo "GPUs       : ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS})"
 echo "Batch/GPU  : ${SAMPLES_PER_GPU}   (effective batch = $((SAMPLES_PER_GPU * NUM_GPUS)))"
 echo "Epochs     : ${MAX_EPOCHS}"
@@ -90,6 +90,6 @@ echo "Training finished. Results in: ${WORK_DIR}"
 echo "Best checkpoint: ${WORK_DIR}/best_mAP*.pth"
 echo ""
 echo "Test on the official DIOR-R test set:"
-echo "  CONFIG='configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py' \\"
+echo "  CONFIG='configs/yolo26/yolo26_dinov3_fpn_train_dior.py' \\"
 echo "  TEST_CKPT=${WORK_DIR}/best_mAP_epoch_*.pth \\"
 echo "  WORK_DIR=${WORK_DIR} SAVE_VIS=0 NUM_GPUS=${NUM_GPUS} bash scripts/test.sh"

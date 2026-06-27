@@ -1,24 +1,36 @@
 # =============================================================================
-# Oriented R-CNN with DINOv3 Backbone for DIOR-R Dataset (v2 — optimized)
+# Oriented R-CNN + DINOv3 ViT-B/16 for DIOR-R  (v3 — ViTDet SimpleFPN + clean aug)
 # =============================================================================
-# Backbone: Meta official DINOv3 ViT-L/16 (imported from dinov3 repo)
-# Neck: ViTDetFPN (proper FPN for ViT features)
-# Head: Oriented R-CNN (rotated detection)
+# Key changes vs the original ViTDetFPN config (addressing val=0.72 / test=0.60):
 #
-# v2 improvements (2026-06-15):
-#   1. RCNN NMS iou_thr: 0.1 → 0.5 (fixed overly aggressive suppression)
-#   2. RoI feat size: 7×7 → 14×14 (better small object detection)
-#   3. Label Smoothing: 0.1 (reduces overfitting)
-#   4. Class-balanced weights: rare classes (dam, trainstation) weighted higher
-#   5. Stronger augmentation: Albu (noise, blur, color jitter, CLAHE)
-#      + more aggressive PhotoMetricDistortion
+#   1. NECK -> standard ViTDet SimpleFeaturePyramid (single last-block feature
+#      + deconv pyramid). The old neck fed 4 transformer-block outputs in as if
+#      they were 4 scales; shallow block-3 features upscaled 4x into the stride-4
+#      level were noisy. Using only the richest (last) feature is the proven
+#      ViTDet recipe (Li et al., ECCV 2022).
+#      -> Backbone now outputs ONLY the last block (layers_to_use=[11]).
 #
-# Baseline config:
-#   1. img_size=800 (DIOR images are ~800×800)
-#   2. 300-epoch training with cosine annealing
-#   3. EMA for smoother convergence
-#   4. Multi-scale training [600, 800, 1000]
-#   5. Frozen stages=0: all backbone params trained
+#   2. AUGMENTATION: removed the double color jitter (Albu + PhotoMetricDistortion)
+#      and the diagonal flip. Kept multi-scale + a single, moderate photometric
+#      distortion + horizontal/vertical flips. The previous setup destroyed
+#      pretrained ViT features / RS spectral content and corrupted angle labels.
+#
+#   3. CLASS WEIGHTS removed: the old hand-tuned weights down-weighted the
+#      majority classes to 0.12-0.15, which tanks their AP and thus the
+#      macro-mAP (each class = 1/20 of the mean). Uniform CE is the clean baseline.
+#
+#   4. SCHEDULE: 300 -> 120 epochs (the small set over-fits the trainval
+#      distribution long before 300ep; EMA + cosine still converge well).
+#      Eval every 2 epochs for finer model selection.
+#
+#   5. batch 16 -> 8 (SimpleFeaturePyramid upsamples in 768ch, heavier than the
+#      old 256ch neck). Scale up if GPU memory allows.
+#
+# Data strategy: val is kept as a held-out set (same trainval pool as train) for
+# model selection. NOTE: because val ~ train distribution, val mAP tracks
+# in-distribution fit and will NOT predict test-set generalization — use it for
+# relative comparisons only. For the final number, retrain on the FULL trainval
+# (merge train+val) and evaluate on the official test split.
 # =============================================================================
 
 _base_ = []
@@ -28,7 +40,7 @@ _base_ = []
 custom_imports = dict(
     imports=[
         'models.backbones.dinov3_wrapper',
-        'models.necks.vitdet_fpn',
+        'models.necks.simple_feature_pyramid',
         'models.datasets.dior',
         'models.pipelines.albu_metadata',
     ],
@@ -37,35 +49,31 @@ custom_imports = dict(
 
 model = dict(
     type='OrientedRCNN',
-    # -------------------------- Backbone: DINOv3 ViT-B/16 ------------------------
-    # Official Meta DINOv3 ViT-Base imported from the dinov3 repository.
-    # Outputs 4 feature maps at embed_dim=768, stride=16.
-    # frozen_stages=0 means ALL backbone params are trained (critical for mAP!).
+    # -------------------------- Backbone: DINOv3 ViT-B/16 -----------------------
+    # Output ONLY the last block -> single stride-16 feature for SimpleFPN.
+    # use_layernorm=False: get_intermediate_layers(norm=True) already applies the
+    # ViT final norm; SimpleFeaturePyramid has its own LayerNorm2d stems.
     backbone=dict(
         type='DinoVisionTransformerBackbone',
-        model_name='dinov3_vitl16',
+        model_name='dinov3_vitb16',
         pretrained=False,
-        layers_to_use=[5, 11, 17, 23],
-        out_indices=(0, 1, 2, 3),
-        use_layernorm=True,
+        layers_to_use=[11],
+        out_indices=(0,),
+        use_layernorm=False,
         frozen_stages=0,
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth',
+            checkpoint='data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
         ),
     ),
 
-    # -------------------------- Neck: ViTDetFPN ----------------------------------
-    # in_channels=1024 matches ViT-L embed_dim.
+    # -------------------------- Neck: ViTDet SimpleFeaturePyramid --------------
+    # Single stride-16 input -> [stride 4, 8, 16, 32] via deconv/conv + LN + GELU.
     neck=dict(
-        type='ViTDetFPN',
-        in_channels=1024,
+        type='SimpleFeaturePyramid',
+        in_channels=768,
         out_channels=256,
         num_outs=4,
-        start_level=0,
-        add_extra_convs=False,
-        se_reduction=16,
-        norm_cfg=dict(type='GN', num_groups=32, requires_grad=True),
-        act_cfg=dict(type='GELU'),
+        in_stride=16,
     ),
 
     # -------------------------- RPN Head -----------------------------------------
@@ -99,9 +107,6 @@ model = dict(
     ),
 
     # -------------------------- ROI Head -----------------------------------------
-    # roi_feat_size=14 for better small object detection.
-    # class_weight uses inverse-sqrt frequency: rare classes (dam, trainstation)
-    # get higher weight, common classes (ship, vehicle) get lower weight.
     roi_head=dict(
         type='OrientedStandardRoIHead',
         bbox_roi_extractor=dict(
@@ -223,11 +228,10 @@ img_norm_cfg = dict(
     to_rgb=True,
 )
 
-# DIOR images are ~800×800 — no need for 1024 upscale
 image_size = (800, 800)
 
-# Multi-scale training scales (centered around 800)
-train_scales = [(600, 600), (800, 800), (1000, 1000)]
+# Mild multi-scale (kept — it is a generalization aid, unlike the color jitter).
+train_scales = [(700, 700), (800, 800), (900, 900)]
 
 train_pipeline = [
     dict(type='LoadImageFromFile'),
@@ -239,8 +243,8 @@ train_pipeline = [
     ),
     dict(
         type='RRandomFlip',
-        flip_ratio=[0.25, 0.25, 0.25],
-        direction=['horizontal', 'vertical', 'diagonal'],
+        flip_ratio=[0.5, 0.5],
+        direction=['horizontal', 'vertical'],
         version='le90',
     ),
     dict(
@@ -251,23 +255,11 @@ train_pipeline = [
         version='le90',
     ),
     dict(
-        type='AlbuMetadata',
-        transforms=[
-            dict(type='GaussNoise', var_limit=(10.0, 50.0), p=0.3),
-            dict(type='MotionBlur', blur_limit=(3, 7), p=0.2),
-            dict(type='RandomBrightnessContrast',
-                 brightness_limit=0.2, contrast_limit=0.2, p=0.3),
-            dict(type='HueSaturationValue',
-                 hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=10, p=0.3),
-        ],
-        keymap=dict(img='image'),
-    ),
-    dict(
         type='PhotoMetricDistortion',
-        brightness_delta=48,
-        contrast_range=(0.4, 1.6),
-        saturation_range=(0.4, 1.6),
-        hue_delta=24,
+        brightness_delta=32,
+        contrast_range=(0.5, 1.5),
+        saturation_range=(0.5, 1.5),
+        hue_delta=18,
     ),
     dict(type='Normalize', **img_norm_cfg),
     dict(type='Pad', size_divisor=32),
@@ -283,7 +275,6 @@ train_pipeline = [
     ),
 ]
 
-# Test pipeline (single-scale, no flip for safe evaluation)
 test_pipeline = [
     dict(type='LoadImageFromFile'),
     dict(
@@ -309,7 +300,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    samples_per_gpu=4,
+    samples_per_gpu=8,
     workers_per_gpu=4,
     train=dict(
         type=dataset_type,
@@ -371,7 +362,7 @@ lr_config = dict(
     min_lr_ratio=1e-3,
 )
 
-runner = dict(type='EpochBasedRunner', max_epochs=300)
+runner = dict(type='EpochBasedRunner', max_epochs=120)
 
 # ========================== Runtime ==========================
 
@@ -384,9 +375,8 @@ log_config = dict(
     ],
 )
 
-# Exponential Moving Average for smoother convergence (~+0.5-1.0 mAP)
 custom_hooks = [
-    dict(type='EMAHook', momentum=0.999, priority='ABOVE_NORMAL'),
+    dict(type='EMAHook', momentum=0.9998, priority='ABOVE_NORMAL'),
 ]
 
 fp16 = dict(loss_scale='dynamic')

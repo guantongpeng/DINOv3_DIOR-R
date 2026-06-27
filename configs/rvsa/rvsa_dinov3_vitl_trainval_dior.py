@@ -37,7 +37,7 @@ model = dict(
         use_layernorm=True,
         frozen_stages=0,
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth',
+            checkpoint='data/weights/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth',
         ),
     ),
     neck=dict(
@@ -158,15 +158,38 @@ test_pipeline = [
 data = dict(
     samples_per_gpu=8,
     workers_per_gpu=4,
-    train=dict(type=dataset_type, ann_file=data_root + 'train/labelTxt/',
-               img_prefix=data_root + 'train/images/',
-               pipeline=train_pipeline, version='le90'),
-    val=dict(type=dataset_type, ann_file=data_root + 'val/labelTxt/',
-             img_prefix=data_root + 'val/images/',
-             pipeline=test_pipeline, version='le90'),
-    test=dict(type=dataset_type, ann_file=data_root + 'test/labelTxt/',
-              img_prefix=data_root + 'test/images/',
-              pipeline=test_pipeline, version='le90'),
+    # ---- train: DIOR-R train + val merged (ConcatDataset via list args) ----
+    train=dict(
+        type=dataset_type,
+        ann_file=[
+            data_root + 'train/labelTxt/',
+            data_root + 'val/labelTxt/',
+        ],
+        img_prefix=[
+            data_root + 'train/images/',
+            data_root + 'val/images/',
+        ],
+        pipeline=train_pipeline,
+        version='le90',
+    ),
+    # ---- val: DIOR-R test split, used for periodic eval + save_best ----
+    # NOTE: val == test here, so every eval runs over the full (~11.7k-image)
+    # test set; control frequency with evaluation.interval.
+    val=dict(
+        type=dataset_type,
+        ann_file=data_root + 'test/labelTxt/',
+        img_prefix=data_root + 'test/images/',
+        pipeline=test_pipeline,
+        version='le90',
+    ),
+    # ---- test: DIOR-R test split, used by tools/test.py for final eval ----
+    test=dict(
+        type=dataset_type,
+        ann_file=data_root + 'test/labelTxt/',
+        img_prefix=data_root + 'test/images/',
+        pipeline=test_pipeline,
+        version='le90',
+    ),
 )
 
 evaluation = dict(interval=3, metric='mAP', save_best='mAP@0.50',

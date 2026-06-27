@@ -19,7 +19,7 @@
 # only variable is the regression loss -> clean A/B comparison.
 # =============================================================================
 
-_base_ = ['./oriented_rcnn_dinov3_vitb_simplefpn_dior.py']
+_base_ = ['./oriented_rcnn_dinov3_vitb_simplefpn_train_dior.py']
 
 model = dict(
     roi_head=dict(

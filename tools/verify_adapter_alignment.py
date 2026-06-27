@@ -56,8 +56,9 @@ def load_adapter(ckpt_path, device):
         model_name='dinov3_vitb16', interaction_indexes=[2, 5, 8, 11],
         out_channels=256, freeze_vit=True, with_cp=False, bf16_vit=False,
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/'
-                       'dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth'))
+            checkpoint=os.path.join(
+                _PROJ, 'data/weights',
+                'dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth')))
     adapter.init_weights()
     if ckpt_path and os.path.isfile(ckpt_path):
         sd = torch.load(ckpt_path, map_location='cpu')

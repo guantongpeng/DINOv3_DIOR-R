@@ -28,8 +28,12 @@
 
 set -e
 
-CONFIG=${CONFIG:-'/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/yolo26_dinov3_fpn_dior_bugfix/yolo26_dinov3_fpn_dior.py'}
-WORK_DIR=${WORK_DIR:-'/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/work_dirs/yolo26_dinov3_fpn_dior_bugfix/'}
+# Resolve project root from this script's location so it runs from any CWD.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+CONFIG=${CONFIG:-"${PROJECT_ROOT}/work_dirs/yolo26_dinov3_fpn_dior_bugfix/yolo26_dinov3_fpn_dior.py"}
+WORK_DIR=${WORK_DIR:-"${PROJECT_ROOT}/work_dirs/yolo26_dinov3_fpn_dior_bugfix/"}
 
 # Prefer the best-on-val checkpoint (from save_best='mAP@0.50'); fall back to
 # latest.pth if no best checkpoint exists. Override with TEST_CKPT=<path>.

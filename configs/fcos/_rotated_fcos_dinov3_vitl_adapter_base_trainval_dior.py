@@ -1,26 +1,29 @@
 # =============================================================================
-# BASE config: Oriented R-CNN + DINOv3 ViT-B/16 + ViT-Adapter (DIOR-R)
+# BASE config: Rotated FCOS + DINOv3 ViT-L/16 + ViT-Adapter (DIOR-R)
 # =============================================================================
 # This is a SHARED base. Do not train it directly — use the stage1/stage2
 # configs that inherit from it.
 #
-# What this recipe implements (vs. the old SimpleFPN config):
-#   1. BACKBONE  -> ViT-Adapter (deformable attention + multi-layer ViT fusion),
-#                   replacing SimpleFeaturePyramid. The frozen ViT runs under
-#                   bfloat16 autocast (official DINOv3 eval recipe). Outputs the
-#                   FULL embed_dim (768-d) pyramid for the FPN to fuse.
-#   2. NECK      -> FPN (lateral + top-down fusion, +P5 stride-64) instead of the
-#                   old PassthroughNeck. This matches the vit-adapter reference.
-#   3. ROTATED   -> test rcnn NMS uses rotated NMS @ iou_thr=0.1; RPN angle
-#                   target_stds=[1,1,1,1,0.5,0.5]; bbox coder uses edge_swap +
-#                   proj_xy; PolyRandomRotate aug added.
+# This recipe swaps the two-stage Oriented R-CNN head for an anchor-free
+# RotatedFCOS head on the SAME DINOv3 ViT-L + ViT-Adapter backbone + FPN neck,
+# so the two detectors are directly comparable.
+#
+# What this recipe implements (mirrors the Oriented R-CNN ViT-Adapter base):
+#   1. BACKBONE  -> ViT-Adapter (deformable attention + multi-layer ViT fusion).
+#                   The frozen ViT runs under bfloat16 autocast (official DINOv3
+#                   eval recipe). Outputs the FULL embed_dim (1024-d) pyramid for
+#                   the FPN to fuse.
+#   2. NECK      -> FPN (lateral + top-down fusion, +P5 stride-64). 5 output
+#                   levels @ strides [4,8,16,32,64], matching the FCOS head.
+#   3. HEAD      -> RotatedFCOSHead (anchor-free, per-pixel l/t/r/b + angle +
+#                   centerness). separate_angle=True: GIoU loss on the decoded
+#                   horizontal box + L1 angle loss (mmrotate canonical recipe).
+#                   strides=[4,8,16,32,64] match the FPN levels.
 #   4. SIZES     -> all train/test scales + pad are multiples of 32 (ViT-Adapter
 #                   needs a stride-32 prior level).
 #   5. PRECISION -> bf16 for the heavy frozen ViT (inside the backbone); the
 #                   trainable head/adapter train in fp32 (fp16 AMP disabled).
-#   6. INIT      -> RegZeroInitHook zeroes the RoI regression FC (DETR-style
-#                   stable box init) before training starts.
-#   7. FREEZE    -> two-stage: see stage1 (frozen ViT) / stage2 (end-to-end).
+#   6. FREEZE    -> two-stage: see stage1 (frozen ViT) / stage2 (end-to-end).
 # =============================================================================
 
 _base_ = []
@@ -28,8 +31,6 @@ _base_ = []
 custom_imports = dict(
     imports=[
         'models.backbones.dinov3_vit_adapter',  # registers DINOv3ViTAdapter
-        'models.necks.passthrough_neck',         # registers PassthroughNeck
-        'models.hooks',                          # registers RegZeroInitHook
         'models.datasets.dior',
         'models.pipelines.albu_metadata',
     ],
@@ -37,16 +38,17 @@ custom_imports = dict(
 )
 
 model = dict(
-    type='OrientedRCNN',
+    type='RotatedFCOS',
 
     # -------------------- Backbone: DINOv3 ViT-Adapter -----------------------
-    # Frozen ViT-B/16 + Spatial Prior Module + 4 deformable InteractionBlocks
-    # fusing ViT layers [2,5,8,11]. Outputs a 4-level pyramid @ 768 channels
-    # (full embed_dim), strides [4,8,16,32], fed into FPN.
+    # Frozen ViT-L/16 (1024-d, 24 blocks) + Spatial Prior Module + 4 deformable
+    # InteractionBlocks fusing ViT layers [5,11,17,23]. Outputs a 4-level pyramid
+    # @ 1024 channels (full embed_dim), strides [4,8,16,32], fed into FPN.
+    # bf16_vit runs the frozen ViT in bfloat16.
     backbone=dict(
         type='DINOv3ViTAdapter',
-        model_name='dinov3_vitb16',
-        interaction_indexes=[2, 5, 8, 11],
+        model_name='dinov3_vitl16',
+        interaction_indexes=[5, 11, 17, 23],
         freeze_vit=True,            # stage1 default; stage2 overrides to False
         pretrain_size=512,
         conv_inplane=64,
@@ -59,116 +61,60 @@ model = dict(
         with_cp=True,               # gradient checkpointing in extractors
         bf16_vit=True,              # bfloat16 autocast for the frozen ViT
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
+            checkpoint='data/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth',
         ),
     ),
 
     # -------------------- Neck: FPN on full embed_dim pyramid ----------------
     neck=dict(
         type='FPN',
-        in_channels=[768, 768, 768, 768],
+        in_channels=[1024, 1024, 1024, 1024],
         out_channels=256,
         start_level=0,
-        add_extra_convs='on_output',
-        num_outs=5,
+        add_extra_convs='on_output',   # add P5 (stride 64) from the last level
+        num_outs=5,                    # -> strides [4, 8, 16, 32, 64]
         relu_before_extra_convs=True,
     ),
 
-    # -------------------- RPN Head -------------------------------------------
-    rpn_head=dict(
-        type='OrientedRPNHead',
+    # -------------------- FCOS Head (anchor-free, rotated) -------------------
+    # separate_angle=True: GIoULoss on the decoded horizontal box (h_bbox_coder)
+    # + L1Loss on the angle branch. Inference decodes 5-d (l,t,r,b,angle) ->
+    # rotated box via bbox_coder=DistanceAnglePointCoder (le90). This is the
+    # canonical mmrotate rotated_fcos recipe.
+    bbox_head=dict(
+        type='RotatedFCOSHead',
+        num_classes=20,
         in_channels=256,
         feat_channels=256,
-        version='le90',
-        anchor_generator=dict(
-            type='AnchorGenerator',
-            scales=[8],
-            ratios=[0.5, 1.0, 2.0],
-            strides=[4, 8, 16, 32, 64],
-        ),
-        bbox_coder=dict(
-            type='MidpointOffsetCoder',
-            angle_range='le90',
-            target_means=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            target_stds=[1.0, 1.0, 1.0, 1.0, 0.5, 0.5],
-        ),
-        loss_cls=dict(type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
-        loss_bbox=dict(type='SmoothL1Loss', beta=1.0 / 9.0, loss_weight=1.0),
+        stacked_convs=4,
+        strides=[4, 8, 16, 32, 64],          # must match the FPN output strides
+        regress_ranges=((-1, 64), (64, 128), (128, 256), (256, 512), (512, 1e8)),
+        center_sampling=True,
+        center_sample_radius=1.5,
+        norm_on_bbox=True,
+        centerness_on_reg=True,
+        separate_angle=True,
+        scale_angle=True,
+        bbox_coder=dict(type='DistanceAnglePointCoder', angle_version='le90'),
+        h_bbox_coder=dict(type='DistancePointBBoxCoder'),
+        loss_cls=dict(
+            type='FocalLoss', use_sigmoid=True, gamma=2.0, alpha=0.25,
+            loss_weight=1.0),
+        loss_bbox=dict(type='GIoULoss', loss_weight=1.0),
+        loss_angle=dict(type='L1Loss', loss_weight=0.2),
+        loss_centerness=dict(
+            type='CrossEntropyLoss', use_sigmoid=True, loss_weight=1.0),
+        norm_cfg=dict(type='GN', num_groups=32, requires_grad=True),
     ),
 
-    # -------------------- ROI Head -------------------------------------------
-    roi_head=dict(
-        type='OrientedStandardRoIHead',
-        bbox_roi_extractor=dict(
-            type='RotatedSingleRoIExtractor',
-            roi_layer=dict(type='RoIAlignRotated', out_size=7, sample_num=2, clockwise=True),
-            out_channels=256,
-            featmap_strides=[4, 8, 16, 32],
-        ),
-        bbox_head=dict(
-            type='RotatedShared2FCBBoxHead',
-            in_channels=256,
-            fc_out_channels=1024,
-            roi_feat_size=7,
-            num_classes=20,
-            bbox_coder=dict(
-                type='DeltaXYWHAOBBoxCoder',
-                angle_range='le90',
-                norm_factor=None,
-                edge_swap=True,
-                proj_xy=True,
-                target_means=[0.0, 0.0, 0.0, 0.0, 0.0],
-                target_stds=[0.1, 0.1, 0.2, 0.2, 0.1],
-            ),
-            reg_class_agnostic=True,
-            loss_cls=dict(
-                type='CrossEntropyLoss',
-                use_sigmoid=False,
-                loss_weight=1.0,
-            ),
-            loss_bbox=dict(type='SmoothL1Loss', beta=1.0, loss_weight=1.0),
-        ),
-    ),
-
-    train_cfg=dict(
-        rpn=dict(
-            assigner=dict(
-                type='MaxIoUAssigner', pos_iou_thr=0.7, neg_iou_thr=0.3,
-                min_pos_iou=0.3, match_low_quality=True, ignore_iof_thr=-1,
-            ),
-            sampler=dict(
-                type='RandomSampler', num=256, pos_fraction=0.5,
-                neg_pos_ub=-1, add_gt_as_proposals=False,
-            ),
-            allowed_border=0, pos_weight=-1, debug=False,
-        ),
-        rpn_proposal=dict(
-            nms_pre=2000, max_per_img=2000,
-            nms=dict(type='nms', iou_threshold=0.8), min_bbox_size=0,
-        ),
-        rcnn=dict(
-            assigner=dict(
-                type='MaxIoUAssigner', pos_iou_thr=0.5, neg_iou_thr=0.5,
-                min_pos_iou=0.5, match_low_quality=False, ignore_iof_thr=-1,
-                iou_calculator=dict(type='RBboxOverlaps2D'),
-            ),
-            sampler=dict(
-                type='RRandomSampler', num=512, pos_fraction=0.25,
-                neg_pos_ub=-1, add_gt_as_proposals=True,
-            ),
-            pos_weight=-1, debug=False,
-        ),
-    ),
-
+    # Anchor-free head: no assigner/sampler/anchor train_cfg (must be None).
+    train_cfg=None,
     test_cfg=dict(
-        rpn=dict(
-            nms_pre=2000, max_per_img=2000,
-            nms=dict(type='nms', iou_threshold=0.8), min_bbox_size=0,
-        ),
-        rcnn=dict(
-            nms_pre=2000, min_bbox_size=0, score_thr=0.05,
-            nms=dict(iou_thr=0.1), max_per_img=2000,
-        ),
+        nms_pre=2000,
+        min_bbox_size=0,
+        score_thr=0.05,
+        nms=dict(iou_thr=0.1),      # rotated NMS (multiclass_nms_rotated)
+        max_per_img=2000,
     ),
 )
 
@@ -247,10 +193,7 @@ test_pipeline = [
 ]
 
 data = dict(
-    # Matches dist_train_adapter_twostage.sh default. The lr in the stage1/stage2
-    # configs assumes effective batch 192 (8 GPUs x 24); re-scale lr if you change
-    # GPU count or this value.
-    samples_per_gpu=24,
+    samples_per_gpu=4,
     workers_per_gpu=4,
     # TRAINVAL split: train on the FULL train+val pool (~11.7k images), use the
     # held-out test split for both model selection (val) and final eval (test).
@@ -293,9 +236,10 @@ checkpoint_config = dict(interval=5, max_keep_ckpts=3)
 log_config = dict(interval=10, hooks=[dict(type='TextLoggerHook')])
 
 custom_hooks = [
-    dict(type='RegZeroInitHook', zero_weight=True, zero_bias=True, priority='HIGHEST'),
     # 0.9998 (not 0.9999): the stage schedules are short (~7.4k iters); 0.9999's
     # ~6.9k-iter half-life would make the EMA nearly inert over one training pass.
+    # NOTE: RegZeroInitHook is intentionally NOT used — it zeroes a RoI regression
+    # FC, which an anchor-free FCOS head does not have.
     dict(type='EMAHook', momentum=0.9998, priority='ABOVE_NORMAL'),
 ]
 

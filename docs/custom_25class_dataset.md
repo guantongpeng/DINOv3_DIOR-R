@@ -243,7 +243,7 @@ __all__ = ['DIORDataset', 'Custom25Dataset']
 
 ## 步骤 3：创建配置文件
 
-基于 `configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py` 创建新配置。
+基于 `configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py` 创建新配置。
 
 ### 文件：`configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_custom25.py`
 

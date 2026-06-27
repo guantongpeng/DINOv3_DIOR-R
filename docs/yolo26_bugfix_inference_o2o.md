@@ -1,6 +1,6 @@
 # YOLO26 检测头训练效果差的排查与修复
 
-> 适用配置：`configs/yolo26/yolo26_dinov3_fpn_dior.py`
+> 适用配置：`configs/yolo26/yolo26_dinov3_fpn_train_dior.py`
 > 关联文档：[YOLO26 旋转目标检测头](./yolo26_detection_head.md)
 
 ## 1. 问题现象
@@ -38,7 +38,7 @@ O2M 训练用 `tal_topk=13`（每个 GT 分配约 13 个正样本），所以 O2
 
 ### 修复
 
-`configs/yolo26/yolo26_dinov3_fpn_dior.py:153`：`end2end=True` → `end2end=False`，让 O2M 输出走带 NMS 的 `_get_bboxes_nms`（NMS 配置 `nms_rotated, iou_thr=0.1` 原本就写在配置里，只是被 `end2end=True` 短路）。
+`configs/yolo26/yolo26_dinov3_fpn_train_dior.py:153`：`end2end=True` → `end2end=False`，让 O2M 输出走带 NMS 的 `_get_bboxes_nms`（NMS 配置 `nms_rotated, iou_thr=0.1` 原本就写在配置里，只是被 `end2end=True` 短路）。
 
 同时把 `models/heads/yolo26_rotated_head.py:1178` 的默认值从 `True` 改为 `False`，避免缺省时静默触发 NMS-free。
 
@@ -154,30 +154,30 @@ else:
 从打了 O2O 补丁的 `epoch_60_o2ofixed.pth` **resume**（保留已收敛的 O2M/骨干，省去前 60 epoch），继续到 epoch 200：
 
 ```bash
-RESUME=work_dirs/yolo26_dinov3_fpn_dior_20260616_191827/epoch_60_o2ofixed.pth \
-WORK_DIR=work_dirs/yolo26_dinov3_fpn_dior_bugfix \
-MASTER_PORT=29600 bash scripts/dist_train_vitb_yolo.sh
+RESUME=work_dirs/yolo26_dinov3_fpn_train_dior_20260616_191827/epoch_60_o2ofixed.pth \
+WORK_DIR=work_dirs/yolo26_dinov3_fpn_train_dior_bugfix \
+MASTER_PORT=29600 bash scripts/yolo26_vitb_train.sh
 ```
 
 - 8 GPU，`samples_per_gpu=16`（有效 batch 128），余弦退火继续到 epoch 200。
 - progressive loss：epoch 60→150 O2O 权重 0→1 线性 ramp，150→200 保持 1.0。
 - 训练期 eval 每 3 epoch，`end2end=False`（O2M+NMS），`save_best='mAP@0.50'`。
-- 监控：`tail -f work_dirs/yolo26_dinov3_fpn_dior_bugfix/train.log`。
+- 监控：`tail -f work_dirs/yolo26_dinov3_fpn_train_dior_bugfix/train.log`。
 
 ---
 
 ## 6. 最终评估（两条推理路径对比）
 
 ```bash
-CKPT=work_dirs/yolo26_dinov3_fpn_dior_bugfix/best_mAP*.pth
+CKPT=work_dirs/yolo26_dinov3_fpn_train_dior_bugfix/best_mAP*.pth
 
 # 路径 A：O2M + NMS（可靠，预期 > 0.60）
-TEST_CKPT=$CKPT WORK_DIR=work_dirs/yolo26_dinov3_fpn_dior_bugfix \
+TEST_CKPT=$CKPT WORK_DIR=work_dirs/yolo26_dinov3_fpn_train_dior_bugfix \
   SAVE_VIS=0 NUM_GPUS=8 bash scripts/test.sh
 
 # 路径 B：O2O NMS-free（Bug3 启用）
 python -m torch.distributed.run --nproc_per_node=8 --master_port=29610 \
-  tools/test.py configs/yolo26/yolo26_dinov3_fpn_dior.py $CKPT \
+  tools/test.py configs/yolo26/yolo26_dinov3_fpn_train_dior.py $CKPT \
   --launcher pytorch --eval mAP \
   --cfg-options model.test_cfg.end2end=True
 ```

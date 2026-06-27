@@ -55,7 +55,7 @@ model = dict(
         use_layernorm=True,
         frozen_stages=0,
         init_cfg=dict(
-            checkpoint='/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
+            checkpoint='data/weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth',
         ),
     ),
 

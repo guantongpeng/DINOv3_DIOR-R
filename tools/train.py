@@ -337,7 +337,7 @@ def main():
         backbone_cfg = cfg.model.get('backbone', {})
         frozen_stages = backbone_cfg.get('frozen_stages', -1)
         freeze_vit = backbone_cfg.get('freeze_vit', False)
-        progressive_cfg = cfg.model.get('train_cfg', {}).get('progressive_loss', None)
+        progressive_cfg = (cfg.model.get('train_cfg') or {}).get('progressive_loss', None)
         if frozen_stages >= 0 or progressive_cfg is not None or freeze_vit:
             cfg.find_unused_parameters = True
             logger.info(

@@ -119,7 +119,7 @@ models/
 │   └── vitdet_fpn.py                    # ViTDetFPN 特征金字塔（YOLO26 配置使用）
 configs/
 └── yolo26/
-    └── yolo26_dinov3_fpn_dior.py        # DIOR-R 训练配置
+    └── yolo26_dinov3_fpn_train_dior.py        # DIOR-R 训练配置
 ```
 
 ## 训练
@@ -133,28 +133,28 @@ source /home/guantp/pro/olmoearth_pretrain/.venv/bin/activate
 ### 单 GPU 训练
 
 ```bash
-python tools/train.py configs/yolo26/yolo26_dinov3_fpn_dior.py \
-    --work-dir work_dirs/yolo26_dinov3_fpn_dior
+python tools/train.py configs/yolo26/yolo26_dinov3_fpn_train_dior.py \
+    --work-dir work_dirs/yolo26_dinov3_fpn_train_dior
 ```
 
 ### 多 GPU 训练
 
 ```bash
-bash scripts/dist_train.sh configs/yolo26/yolo26_dinov3_fpn_dior.py 4
+bash scripts/orcnn_vitl_fpn_train.sh configs/yolo26/yolo26_dinov3_fpn_train_dior.py 4
 ```
 
 ### 从检查点恢复训练
 
 ```bash
-python tools/train.py configs/yolo26/yolo26_dinov3_fpn_dior.py \
-    --resume-from work_dirs/yolo26_dinov3_fpn_dior/latest.pth
+python tools/train.py configs/yolo26/yolo26_dinov3_fpn_train_dior.py \
+    --resume-from work_dirs/yolo26_dinov3_fpn_train_dior/latest.pth
 ```
 
 ## 推理
 
 ```bash
-python tools/test.py configs/yolo26/yolo26_dinov3_fpn_dior.py \
-    work_dirs/yolo26_dinov3_fpn_dior/best_mAP.pth \
+python tools/test.py configs/yolo26/yolo26_dinov3_fpn_train_dior.py \
+    work_dirs/yolo26_dinov3_fpn_train_dior/best_mAP.pth \
     --eval mAP
 ```
 

@@ -65,5 +65,5 @@ data/DIOR-R
 .codegraph
 .kilo
 .cursor
-
+*.nfs*
 vit-adapter

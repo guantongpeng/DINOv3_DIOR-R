@@ -6,7 +6,13 @@
 > - ViT-L 配置：`dinov3_vitl16`，`layers_to_use=[5,11,17,23]`，`frozen_stages=0`，输入 **800×800**。
 >
 > 下文 `img_size=1024`、`out_indices=(3,5,7,11)` 等描述对应历史 timm 配置；以下方当前配置文件为准：
-> `configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_dior.py`、`configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py`。
+> `configs/oriented_rcnn/oriented_rcnn_dinov3_vitb_fpn_train_dior.py`、`configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py`。
+
+> **配置变体（2026-06 新增）**：除 `_train` 配置外，多数提供 **`_trainval`** 版本（train+val 合并训练、test 划分用于评估）。
+> 另有两条特殊变体：
+> - **ViT-Adapter 两阶段**（`oriented_rcnn_dinov3_vit{b,l}_adapter_stage{1,2}_trainval_dior.py`）：
+>   stage1 冻结 ViT 训 adapter → stage2 解冻端到端微调，详见 [vit_adapter_explained.md](vit_adapter_explained.md)。
+> - **Swin-Large 对照基线**（`oriented_rcnn_swin_large_trainval_dior.py`）：Swin v1-L 全参微调，用于对比自监督 DINOv3 与有监督 Swin 骨干。
 
 ## 概览 | Overview
 
@@ -58,31 +64,40 @@
 
 ```
 mm_dino/
-├── configs/
-│   └── oriented_rcnn/
-│       └── oriented_rcnn_dinov3_fpn_dior.py   # DIOR-R 训练配置
+├── configs/oriented_rcnn/                # Oriented R-CNN 配置
+│   ├── oriented_rcnn_dinov3_fpn_train_dior.py          # ViT-L + ViTDetFPN
+│   ├── oriented_rcnn_dinov3_fpn_trainval_dior.py       #   └ trainval 变体
+│   ├── oriented_rcnn_dinov3_vitb_fpn_train_dior.py     # ViT-B + ViTDetFPN
+│   ├── oriented_rcnn_dinov3_vitb_fpn_trainval_dior.py
+│   ├── oriented_rcnn_dinov3_vitb_simplefpn_{train,trainval}_dior.py
+│   ├── oriented_rcnn_dinov3_vitb_simplefpn_kfiou_train_dior.py
+│   ├── _oriented_rcnn_dinov3_vitb_adapter_base_trainval_dior.py  # ViT-B ViT-Adapter 基座
+│   ├── oriented_rcnn_dinov3_vitb_adapter_stage{1,2}_trainval_dior.py
+│   ├── _oriented_rcnn_dinov3_vitl_adapter_base_trainval_dior.py  # ViT-L ViT-Adapter 基座
+│   ├── oriented_rcnn_dinov3_vitl_adapter_stage{1,2}_trainval_dior.py
+│   └── oriented_rcnn_swin_large_trainval_dior.py       # Swin-L 对照基线
 ├── models/
-│   ├── __init__.py
-│   ├── backbones/
-│   │   ├── __init__.py
-│   │   └── vit_dinov3.py                      # DINOv3 ViT 骨干网络
-│   ├── datasets/
-│   │   ├── __init__.py
-│   │   └── dior.py                            # DIOR-R 数据集类
-│   └── necks/
-│       ├── __init__.py
-│       ├── simple_fpn.py                      # SimpleFPN (旧版 neck)
-│       └── vitdet_fpn.py                      # ViTDetFPN (新版 neck, 推荐)
-├── tools/
-│   ├── train.py                               # 训练脚本
-│   ├── test.py                                # 评估脚本
-│   ├── dist_train.sh                          # 分布式训练脚本 (DIOR-R)
-│   ├── dist_test.sh                           # 分布式测试脚本
-│   └── yolo2dota.py                           # YOLO→DOTA 格式转换
+│   ├── backbones/{dinov3_wrapper,dinov3_vit_adapter,vit_dinov3}.py
+│   ├── necks/{vitdet_fpn,simple_feature_pyramid,simple_fpn,passthrough_neck}.py
+│   ├── datasets/dior.py
+│   ├── pipelines/albu_metadata.py
+│   └── hooks.py                        # ProgressiveLossHook / RegZeroInitHook
+├── tools/                              # Python 入口
+│   ├── train.py                        # 训练（含 PyTorch 2.7 兼容补丁）
+│   ├── test.py                         # 评估
+│   ├── plot_loss.py / verify_dinov3_weights.py / verify_adapter_alignment.py
+│   └── yolo2dota.py
+├── scripts/                            # 分布式训练/评估 shell 脚本
+│   ├── orcnn_vit{l,b}_fpn_train.sh     # ViT-L / ViT-B FPN 训练
+│   ├── orcnn_vit{l,b}_adapter_trainval.sh   # ViT-Adapter 两阶段训练
+│   ├── orcnn_swin_large_trainval.sh    # Swin-L trainval
+│   ├── orcnn_vitb_{fpn,simplefpn,kfiou}_{train,trainval}.sh
+│   └── test.sh                         # 分布式评估脚本
 ├── data/
-│   └── prepare_dior.py                        # DIOR-R 数据集准备
-└── docs/
-    └── oriented_rcnn_dinov3_dior.md           # 本文档
+│   ├── prepare_dior.py                 # DIOR-R 数据集准备
+│   ├── convert_dior_xml_to_dota.py
+│   └── weights/                        # 预训练权重
+└── docs/oriented_rcnn_dinov3_dior.md   # 本文档
 ```
 
 ## 环境要求 | Requirements
@@ -313,45 +328,45 @@ Oriented R-CNN 是专为旋转目标检测设计的二阶段检测器。
 conda activate mmdet
 
 # 基础训练
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py
 
 # 指定工作目录
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
     --work-dir work_dirs/my_experiment
 
 # 从检查点恢复
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    --resume-from work_dirs/oriented_rcnn_dinov3_fpn_dior/latest.pth
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
+    --resume-from work_dirs/oriented_rcnn_dinov3_fpn_train_dior/latest.pth
 ```
 
 ### 2. 多GPU分布式训练
 
 ```bash
 # 4 GPU训练
-bash scripts/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
+bash scripts/orcnn_vitl_fpn_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py 4
 
 # 8 GPU训练
-bash scripts/dist_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 8 \
+bash scripts/orcnn_vitl_fpn_train.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py 8 \
     --work-dir work_dirs/my_experiment
 
 # 指定GPU
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/dist_train.sh \
-    configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py 4
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/orcnn_vitl_fpn_train.sh \
+    configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py 4
 ```
 
 ### 3. 调优训练参数
 
 ```bash
 # 覆盖学习率
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
     --cfg-options optimizer.lr=5e-5
 
 # 覆盖批次大小
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
     --cfg-options data.samples_per_gpu=4
 
 # 调整冻结层数
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
     --cfg-options "model.backbone.frozen_stages=4"
 ```
 
@@ -359,23 +374,24 @@ python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
 
 ```bash
 # 单GPU评估
-python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth \
+python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
+    work_dirs/oriented_rcnn_dinov3_fpn_train_dior/epoch_36.pth \
     --eval mAP
 
-# 多GPU评估
-bash scripts/dist_test.sh configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth 4 \
-    --eval mAP
+# 多GPU评估（用 scripts/test.sh，自动从 CUDA_VISIBLE_DEVICES 推导 GPU 数）
+CONFIG=configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
+TEST_CKPT=work_dirs/oriented_rcnn_dinov3_fpn_train_dior/best_mAP_epoch_*.pth \
+WORK_DIR=work_dirs/oriented_rcnn_dinov3_fpn_train_dior \
+CUDA_VISIBLE_DEVICES=0,1,2,3 SAVE_VIS=0 bash scripts/test.sh
 
 # 保存检测结果
-python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth \
+python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
+    work_dirs/oriented_rcnn_dinov3_fpn_train_dior/epoch_36.pth \
     --out results.pkl --eval mAP
 
 # 可视化检测结果
-python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
-    work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth \
+python tools/test.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
+    work_dirs/oriented_rcnn_dinov3_fpn_train_dior/epoch_36.pth \
     --show --show-dir vis_results --show-score-thr 0.3
 ```
 
@@ -387,8 +403,8 @@ from mmdet.apis import init_detector, inference_detector
 from mmrotate.core import visualize
 
 # 加载模型
-config_file = 'configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py'
-checkpoint_file = 'work_dirs/oriented_rcnn_dinov3_fpn_dior/epoch_36.pth'
+config_file = 'configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py'
+checkpoint_file = 'work_dirs/oriented_rcnn_dinov3_fpn_train_dior/epoch_36.pth'
 model = init_detector(config_file, checkpoint_file, device='cuda:0')
 
 # 推理单张图片
@@ -457,14 +473,14 @@ backbone=dict(
 
 ```bash
 # 显存不足? 使用以下配置
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
     --cfg-options \
         data.samples_per_gpu=1 \
         model.backbone.with_cp=True \
         model.neck.num_outs=3
 
 # 精度不够? 使用以下配置
-python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_dior.py \
+python tools/train.py configs/oriented_rcnn/oriented_rcnn_dinov3_fpn_train_dior.py \
     --cfg-options \
         runner.max_epochs=72 \
         model.backbone.frozen_stages=4 \
@@ -516,7 +532,7 @@ Address already in use
 **解决方案**:
 ```bash
 # 使用不同端口
-PORT=29501 bash scripts/dist_train.sh ... 4
+PORT=29501 bash scripts/orcnn_vitl_fpn_train.sh ... 4
 ```
 
 ## 参考 | References

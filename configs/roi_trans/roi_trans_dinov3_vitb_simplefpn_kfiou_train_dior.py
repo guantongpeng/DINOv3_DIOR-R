@@ -19,7 +19,7 @@
 # retuned for 4 FPN levels (ViT FPN) + DIOR-R (20 classes, 800px, le90).
 # =============================================================================
 
-_base_ = ['../oriented_rcnn/oriented_rcnn_dinov3_vitb_simplefpn_dior.py']
+_base_ = ['../oriented_rcnn/oriented_rcnn_dinov3_vitb_simplefpn_train_dior.py']
 
 angle_version = 'le90'
 

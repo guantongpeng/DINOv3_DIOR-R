@@ -8,7 +8,7 @@
 #     stage 2: unfreeze, lr 1e-4 with backbone lr_mult 0.1 (ViT @ 1e-5)
 #
 # Point load_from at the stage-1 best/latest checkpoint, e.g.:
-#   scripts/dist_train_adapter_twostage.sh does this automatically, or manually:
+#   scripts/orcnn_vitb_adapter_trainval.sh does this automatically, or manually:
 #   python tools/train.py <this_config> \
 #       --cfg-options load_from=work_dirs/.../stage1/best_mAP_epoch_XX.pth
 #
@@ -16,7 +16,7 @@
 # regression head that stage 1 already learned.
 # =============================================================================
 
-_base_ = ['_oriented_rcnn_dinov3_vitb_adapter_base_dior.py']
+_base_ = ['_oriented_rcnn_dinov3_vitb_adapter_base_trainval_dior.py']
 
 # Unfreeze the ViT for end-to-end fine-tuning.
 model = dict(backbone=dict(freeze_vit=False))

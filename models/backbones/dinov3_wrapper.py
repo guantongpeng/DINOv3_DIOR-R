@@ -24,8 +24,9 @@ _log = logging.getLogger("dinov3")
 
 # Canonical dinov3 source root (all dinov3 imports use this path only).
 # Override with the DINOV3_SRC env var if needed.
+_PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _DINOV3_PATH = os.environ.get(
-    'DINOV3_SRC', '/mnt/ht2-nas2/00-model/guantp/dino/mm_dino/third_party/dinov3')
+    'DINOV3_SRC', os.path.join(_PROJ, 'third_party', 'dinov3'))
 if _DINOV3_PATH not in sys.path:
     sys.path.insert(0, _DINOV3_PATH)
 

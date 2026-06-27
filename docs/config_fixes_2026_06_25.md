@@ -131,8 +131,8 @@ FPN 输出 5 个 level，256-d，stride [4,8,16,32,64]，RPN 正常生成 2000 p
 
 **文件**:
 - `models/backbones/dinov3_vit_adapter.py`（`out_channels` 可选化）
-- `configs/oriented_rcnn/_oriented_rcnn_dinov3_vitl_adapter_base_dior.py`
-- `configs/oriented_rcnn/_oriented_rcnn_dinov3_vitb_adapter_base_dior.py`
+- `configs/oriented_rcnn/_oriented_rcnn_dinov3_vitl_adapter_base_trainval_dior.py`
+- `configs/oriented_rcnn/_oriented_rcnn_dinov3_vitb_adapter_base_trainval_dior.py`
 
 > **注意**：ViTDetFPN / SimpleFPN 配置（非 adapter）的 neck **不修改**——它们本身就是合理的 ViTDet 多尺度方案，只有 adapter 配置需要替换 PassthroughNeck。
 
@@ -272,7 +272,7 @@ dict(
 
 同时旋转图像和 GT 框（polygon → 重新编码为 le90），保证标注一致性。
 
-**文件**: 全部 adapter base config、ViTDetFPN config、SimpleFPN config、`yolo26_dinov3_fpn_dior.py`、`rvsa_dinov3_vitl_dior.py`（Swin-L 和 trainval_fpn 原本已有）
+**文件**: 全部 adapter base config、ViTDetFPN config、SimpleFPN config、`yolo26_dinov3_fpn_train_dior.py`、`rvsa_dinov3_vitl_trainval_dior.py`（Swin-L 和 trainval_fpn 原本已有）
 
 ---
 
@@ -287,8 +287,8 @@ dict(
 **修复**：移除 `class_weight` 字段，使用均匀交叉熵（uniform CE）。`SimpleFPN` 配置原本已移除。
 
 **影响配置**:
-- `oriented_rcnn_dinov3_vitb_fpn_dior.py`
-- `oriented_rcnn_dinov3_fpn_dior.py`
+- `oriented_rcnn_dinov3_vitb_fpn_train_dior.py`
+- `oriented_rcnn_dinov3_fpn_train_dior.py`
 - `oriented_rcnn_swin_large_trainval_dior.py`
 
 ### 7.2 统一修复汇总
@@ -321,7 +321,7 @@ dict(
 
 ### 问题
 
-运行 `dist_train_adapter_twostage_vitl.sh` 时报错：
+运行 `orcnn_vitl_adapter_trainval.sh` 时报错：
 
 ```
 RuntimeError: Expected to mark a variable ready only once.
@@ -380,7 +380,7 @@ NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
 
 **修复**：训练脚本添加 `export NCCL_DEBUG=WARN`。
 
-**文件**: `scripts/dist_train_adapter_twostage_vitl.sh`、`scripts/dist_train_adapter_twostage.sh`
+**文件**: `scripts/orcnn_vitl_adapter_trainval.sh`、`scripts/orcnn_vitb_adapter_trainval.sh`
 
 ---
 
@@ -398,26 +398,26 @@ NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
 
 | 文件 | 关键修改 |
 |------|----------|
-| `_oriented_rcnn_dinov3_vitl_adapter_base_dior.py` | FPN 替换 PassthroughNeck, NMS, angle_stds, bbox_coder, RoI=7, PolyRandomRotate |
-| `_oriented_rcnn_dinov3_vitb_adapter_base_dior.py` | 同上（768-d） |
-| `oriented_rcnn_dinov3_vitl_adapter_stage{1,2}_dior.py` | grad_clip 10 |
-| `oriented_rcnn_dinov3_vitb_adapter_stage{1,2}_dior.py` | grad_clip 10 |
-| `oriented_rcnn_dinov3_vitb_fpn_dior.py` | 移除 class_weight, NMS, angle_stds, bbox_coder, grad_clip, gpu_thr, RoI=7, PolyRandomRotate |
-| `oriented_rcnn_dinov3_fpn_dior.py` | 同上（ViT-L） |
+| `_oriented_rcnn_dinov3_vitl_adapter_base_trainval_dior.py` | FPN 替换 PassthroughNeck, NMS, angle_stds, bbox_coder, RoI=7, PolyRandomRotate |
+| `_oriented_rcnn_dinov3_vitb_adapter_base_trainval_dior.py` | 同上（768-d） |
+| `oriented_rcnn_dinov3_vitl_adapter_stage{1,2}_trainval_dior.py` | grad_clip 10 |
+| `oriented_rcnn_dinov3_vitb_adapter_stage{1,2}_trainval_dior.py` | grad_clip 10 |
+| `oriented_rcnn_dinov3_vitb_fpn_train_dior.py` | 移除 class_weight, NMS, angle_stds, bbox_coder, grad_clip, gpu_thr, RoI=7, PolyRandomRotate |
+| `oriented_rcnn_dinov3_fpn_train_dior.py` | 同上（ViT-L） |
 | `oriented_rcnn_dinov3_vitb_fpn_trainval_dior.py` | 继承 vitb_fpn，自动获得修复 |
-| `oriented_rcnn_dinov3_vitb_simplefpn_dior.py` | NMS, angle_stds, bbox_coder, grad_clip, gpu_thr, RoI=7, PolyRandomRotate |
+| `oriented_rcnn_dinov3_vitb_simplefpn_train_dior.py` | NMS, angle_stds, bbox_coder, grad_clip, gpu_thr, RoI=7, PolyRandomRotate |
 | `oriented_rcnn_dinov3_vitb_simplefpn_trainval_dior.py` | 同上 |
-| `oriented_rcnn_dinov3_vitb_simplefpn_kfiou_dior.py` | roi_feat_size 14→7 |
+| `oriented_rcnn_dinov3_vitb_simplefpn_kfiou_train_dior.py` | roi_feat_size 14→7 |
 | `oriented_rcnn_swin_large_trainval_dior.py` | 移除 class_weight, grad_clip, bbox_coder, gpu_thr |
-| `roi_trans/roi_trans_dinov3_vitb_simplefpn_kfiou_dior.py` | 继承 simplefpn，自动获得修复 |
-| `rvsa/rvsa_dinov3_vitl_dior.py` | 加 PolyRandomRotate（grad_clip=0.1 保留） |
-| `yolo26/yolo26_dinov3_fpn_dior.py` | grad_clip 10, 加 PolyRandomRotate |
+| `roi_trans/roi_trans_dinov3_vitb_simplefpn_kfiou_train_dior.py` | 继承 simplefpn，自动获得修复 |
+| `rvsa/rvsa_dinov3_vitl_trainval_dior.py` | 加 PolyRandomRotate（grad_clip=0.1 保留） |
+| `yolo26/yolo26_dinov3_fpn_train_dior.py` | grad_clip 10, 加 PolyRandomRotate |
 
 ### 脚本文件（12 个）
 
 | 文件 | 修改内容 |
 |------|----------|
-| `scripts/dist_train_adapter_twostage_vitl.sh` | NUM_GPUS 自动推导, NCCL_DEBUG=WARN |
-| `scripts/dist_train_adapter_twostage.sh` | NUM_GPUS 自动推导, NCCL_DEBUG=WARN |
-| `scripts/dist_train_*.sh`（其余 8 个） | NUM_GPUS 自动推导 |
+| `scripts/orcnn_vitl_adapter_trainval.sh` | NUM_GPUS 自动推导, NCCL_DEBUG=WARN |
+| `scripts/orcnn_vitb_adapter_trainval.sh` | NUM_GPUS 自动推导, NCCL_DEBUG=WARN |
+| `scripts/orcnn_*_train*.sh`、`scripts/yolo26_*.sh`、`scripts/roitrans_*.sh`（其余非 adapter 训练脚本） | NUM_GPUS 自动推导 |
 | `scripts/test.sh` | NUM_GPUS 自动推导, 注释更新 |
