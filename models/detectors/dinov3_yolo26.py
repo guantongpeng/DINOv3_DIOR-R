@@ -196,26 +196,15 @@ class DINOv3YOLO26(RotatedBaseDetector):
     ) -> List[list]:
         """Test with test-time augmentation.
 
-        Args:
-            imgs: List of image tensors for different augmentations.
-            img_metas: Meta information for each augmentation.
-            rescale: Whether to rescale results.
-
-        Returns:
-            BBox results per image and class.
+        The YOLO26 NMS-free head does not implement TTA merging. Fall back to
+        single-augmentation evaluation on the first augmentation to avoid a
+        hard crash (the head/base class does not expose ``extract_feats`` /
+        ``aug_test``).
         """
-        assert hasattr(self.bbox_head, 'aug_test'), (
-            f'{self.bbox_head.__class__.__name__} '
-            'does not support test-time augmentation'
-        )
-
-        feats = self.extract_feats(imgs)
-        results_list = self.bbox_head.aug_test(feats, img_metas, rescale=rescale)
-        bbox_results = [
-            rbbox2result(det_bboxes, det_labels, self.bbox_head.num_classes)
-            for det_bboxes, det_labels in results_list
-        ]
-        return bbox_results
+        warnings.warn(
+            f'{self.__class__.__name__}.aug_test is not implemented for the '
+            f'NMS-free YOLO26 head; falling back to the first augmentation.')
+        return self.simple_test(imgs[0], img_metas[0], rescale=rescale)
 
     def set_o2o_weight(self, weight: float):
         """Set the O2O (one-to-one) head loss weight for progressive training.

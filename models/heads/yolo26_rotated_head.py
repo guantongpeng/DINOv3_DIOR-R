@@ -19,7 +19,7 @@ compatible with mmrotate. The head supports:
    producing lighter models with unconstrained regression range.
 
 5. **Angle Encoding**: YOLO26-style sigmoid-angle mapping:
-   angle = (sigmoid(pred) - 0.25) * pi  → range [-pi/4, 3pi/4]
+   angle = (sigmoid(pred) - 0.5) * pi  → range [-pi/2, pi/2] (le90)
 
 Key YOLO26 innovations adapted for mmrotate:
 - TaskAlignedAssigner (TAL): unified alignment metric for label assignment
@@ -40,8 +40,6 @@ import torch.nn.functional as F
 from mmcv.cnn import ConvModule, Scale, bias_init_with_prob, normal_init
 from mmcv.runner import force_fp32
 from mmdet.core import (
-    build_assigner,
-    build_sampler,
     multi_apply,
     reduce_mean,
 )
@@ -150,6 +148,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
 
         self.reg_max = reg_max
         self.use_dfl = use_dfl
+        assert feat_channels >= 4 and feat_channels % 4 == 0, (
+            f'feat_channels must be >= 4 and divisible by 4 (the angle branch '
+            f'uses feat_channels // 4), got {feat_channels}')
         self.feat_channels = feat_channels
         self.stacked_convs = stacked_convs
 
@@ -625,24 +626,31 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         # This matches FCOS convention where bbox_pred = exp(raw_output).
         # Without exp, raw outputs ~N(0,0.01) produce tiny boxes that never
         # overlap with GTs, causing zero IoU loss and no learning signal.
-        decoded_bbox_preds = flatten_bbox_preds.exp()  # (B, N, 4)
+        # Clamp the raw output before exp to avoid fp16 overflow.
+        decoded_bbox_preds = flatten_bbox_preds.clamp(max=15.0).exp()  # (B, N, 4)
 
-        # Task-Aligned Label Assignment uses decoded boxes for IoU computation
-        (
-            assigned_labels,
-            assigned_bbox_targets,
-            assigned_angle_targets,
-            assigned_scores,
-            fg_mask,
-        ) = self._tal_assign(
-            flatten_cls_scores,
-            decoded_bbox_preds,
-            flatten_angle_preds,
-            flatten_points,
-            gt_bboxes,
-            gt_labels,
-            o2o_mode=o2o_mode,
-        )
+        # Task-Aligned Label Assignment uses decoded boxes for IoU computation.
+        # Run under no_grad with detached inputs: label assignment only decides
+        # WHICH points are positive and must NOT back-propagate (standard mmdet
+        # assigner convention). This avoids building a huge N_all×num_gt graph
+        # that is never reduced, and makes the in-place index ops in the
+        # matcher autograd-safe.
+        with torch.no_grad():
+            (
+                assigned_labels,
+                assigned_bbox_targets,
+                assigned_angle_targets,
+                assigned_scores,
+                fg_mask,
+            ) = self._tal_assign(
+                flatten_cls_scores.detach(),
+                decoded_bbox_preds.detach(),
+                flatten_angle_preds.detach(),
+                flatten_points,
+                gt_bboxes,
+                gt_labels,
+                o2o_mode=o2o_mode,
+            )
 
         num_pos = fg_mask.sum().to(flatten_cls_scores.dtype)
         num_total_samples = max(reduce_mean(num_pos), 1.0)
@@ -683,11 +691,17 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
 
         losses[prefix + 'loss_bbox'] = loss_bbox
 
-        # 3. Angle loss — compare decoded angle prediction to GT angle
+        # 3. Angle loss — periodic (OBB angles have a pi period). Map the signed
+        #    difference to [-pi/2, pi/2) so boxes near the +/-90 deg le90
+        #    boundary do not incur a spurious ~180 deg loss jump. Feeding the
+        #    wrapped difference against a zero target is equivalent to a
+        #    periodic SmoothL1 while keeping gradient flow through the pred.
         if num_pos > 0:
+            angle_diff = self._wrap_angle_pi(
+                pred_bboxes[:, 4:5] - fg_bbox_targets[:, 4:5])
             loss_angle = self.loss_angle(
-                pred_bboxes[:, 4:5],
-                fg_bbox_targets[:, 4:5],
+                angle_diff,
+                angle_diff.new_zeros(angle_diff.shape),
                 avg_factor=num_total_samples,
             )
         else:
@@ -912,6 +926,22 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         max_align, max_gt_idx = anchor_align.max(dim=1)
 
         pos_mask = max_align > 0
+
+        # Guarantee at least one positive per GT (STAL). A GT may otherwise get
+        # zero positives when every candidate point has iou=0 (e.g. tiny objects
+        # early in training): alignment = cls^alpha * iou^beta = 0, so it loses
+        # the `> 0` test. For every uncovered GT, force its best candidate point
+        # (the highest-alignment center-prior point; all-zero column => the
+        # nearest point) to be positive so the object still receives
+        # cls/bbox/angle gradients.
+        gt_covered = torch.zeros(num_gt, dtype=torch.bool, device=device)
+        gt_covered[max_gt_idx[pos_mask]] = True
+        uncovered = torch.where(~gt_covered)[0]
+        if uncovered.numel() > 0:
+            best_pts = alignment[:, uncovered].argmax(dim=0)
+            pos_mask[best_pts] = True
+            max_gt_idx[best_pts] = uncovered
+
         assigned_label[pos_mask] = gt_labels[max_gt_idx[pos_mask]]
         assigned_bbox[pos_mask] = gt_bboxes[max_gt_idx[pos_mask]]
         assigned_angle[pos_mask] = gt_bboxes[max_gt_idx[pos_mask], 4:5]
@@ -1112,7 +1142,7 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
 
         Returns:
             (N, 5) tensor of decoded rotated boxes [cx, cy, w, h, angle].
-            Angle is decoded as sigmoid(pred) * pi - pi/4 (range [-π/4, 3π/4]).
+            Angle is decoded as (sigmoid(pred) - 0.5) * pi (range [-π/2, π/2], le90).
         """
         px, py = points[:, 0], points[:, 1]
         l, t, r, b = (ltrb_pred[:, 0], ltrb_pred[:, 1],
@@ -1126,9 +1156,23 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
         h = (y2 - y1).clamp(min=1.0)
         cx = (x1 + x2) / 2.0
         cy = (y1 + y2) / 2.0
-        angle = (angle_pred.sigmoid() - 0.25) * math.pi
+        # Map sigmoid to [-pi/2, pi/2) to cover the full le90 angle range.
+        # (The previous [-pi/4, 3pi/4] mapping could not represent angles in
+        # [-pi/2, -pi/4), biasing the head for objects oriented near -90 deg.)
+        angle = (angle_pred.sigmoid() - 0.5) * math.pi
 
         return torch.stack([cx, cy, w, h, angle.squeeze(-1)], dim=-1)
+
+    @staticmethod
+    def _wrap_angle_pi(diff: torch.Tensor) -> torch.Tensor:
+        """Wrap an angle difference into [-pi/2, pi/2) using the OBB pi-period.
+
+        Oriented boxes have a pi angular period (rotating a rectangle by pi
+        returns it to itself). A raw difference between two le90 angles can
+        therefore be off by a full pi; wrapping prevents a spurious ~pi loss
+        jump for objects sitting near the +/-90 deg boundary.
+        """
+        return (diff + math.pi / 2).remainder(math.pi) - math.pi / 2
 
     @force_fp32(
         apply_to=('cls_scores', 'bbox_preds', 'angle_preds', 'obj_preds')
@@ -1255,8 +1299,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             angle_pred_flat = angle_pred.permute(1, 2, 0).reshape(-1, 1)
             obj_pred_flat = obj_pred.permute(1, 2, 0).reshape(-1, 1)
 
-            # Apply exp() to bbox_pred (matching training convention)
-            bbox_pred_flat = bbox_pred_flat.exp()
+            # Apply exp() to bbox_pred (matching training convention).
+            # Clamp guards against fp16 overflow for large raw outputs.
+            bbox_pred_flat = bbox_pred_flat.clamp(max=15.0).exp()
 
             # Decode predictions to rotated boxes
             decoded_bboxes = self._decode_bboxes(
@@ -1327,8 +1372,9 @@ class YOLO26RotatedHead(RotatedAnchorFreeHead):
             angle_pred_flat = angle_pred.permute(1, 2, 0).reshape(-1, 1)
             obj_pred_flat = obj_pred.permute(1, 2, 0).reshape(-1, 1)
 
-            # Apply exp() to bbox_pred (matching training convention)
-            bbox_pred_flat = bbox_pred_flat.exp()
+            # Apply exp() to bbox_pred (matching training convention).
+            # Clamp guards against fp16 overflow for large raw outputs.
+            bbox_pred_flat = bbox_pred_flat.clamp(max=15.0).exp()
 
             # Decode bboxes
             decoded_bboxes = self._decode_bboxes(

@@ -52,6 +52,8 @@ if _DINOV3_SRC and _DINOV3_SRC not in sys.path:
 
 from mmdet.models.builder import BACKBONES  # noqa: E402
 
+from ._dinov3_specs import MODEL_SPECS, LVD1689M_CFG
+
 
 class _MmcvMSDeformAttn(nn.Module):
     """Drop-in replacement for DINOv3's MSDeformAttn backed by mmcv's op.
@@ -130,16 +132,8 @@ class DINOv3ViTAdapter(nn.Module):
             build_model_for_eval; init_weights() is a no-op.
     """
 
-    # model_name -> (build arch, embed_dim, depth, patch_size)
-    _MODEL_SPECS = {
-        "dinov3_vits16": {"arch": "vit_small", "embed_dim": 384, "depth": 12, "patch_size": 16},
-        "dinov3_vits16plus": {"arch": "vit_small", "embed_dim": 384, "depth": 12, "patch_size": 16},
-        "dinov3_vitb16": {"arch": "vit_base", "embed_dim": 768, "depth": 12, "patch_size": 16},
-        "dinov3_vitl16": {"arch": "vit_large", "embed_dim": 1024, "depth": 24, "patch_size": 16},
-        "dinov3_vitl16plus": {"arch": "vit_large", "embed_dim": 1024, "depth": 24, "patch_size": 16},
-        "dinov3_vith16plus": {"arch": "vit_huge2", "embed_dim": 1280, "depth": 32, "patch_size": 16},
-        "dinov3_vit7b16": {"arch": "vit_7b", "embed_dim": 4096, "depth": 40, "patch_size": 16},
-    }
+    # model_name -> (build arch, embed_dim, depth, patch_size); shared.
+    _MODEL_SPECS = MODEL_SPECS
 
     # Default interaction block indices per arch (evenly spaced).
     _DEFAULT_INTERACTION_INDEXES = {
@@ -150,20 +144,8 @@ class DINOv3ViTAdapter(nn.Module):
         "vit_7b": [9, 19, 29, 39],
     }
 
-    # LVD1689M checkpoint config (matches the dinov3 hub backbones: 4 storage
-    # tokens, mask_k_bias, layernormbf16, RoPE base=100/rescale=2). These are
-    # merged onto the base student cfg below, like vit-adapter/dinov3_mmrotate0.
-    _LVD1689M_CFG = dict(
-        pos_embed_rope_base=100.0,
-        pos_embed_rope_min_period=None,
-        pos_embed_rope_max_period=None,
-        pos_embed_rope_normalize_coords="separate",
-        pos_embed_rope_rescale_coords=2,
-        pos_embed_rope_dtype="fp32",
-        norm_layer="layernormbf16",
-        n_storage_tokens=4,
-        mask_k_bias=True,
-    )
+    # LVD1689M checkpoint config; shared with the plain ViT wrapper.
+    _LVD1689M_CFG = LVD1689M_CFG
 
     def __init__(
         self,

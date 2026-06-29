@@ -114,8 +114,9 @@ def parse_args():
         type=str,
         nargs='+',
         default=['mAP'],
-        choices=['mAP', 'recall', 'bbox'],
-        help='Evaluation metrics',
+        help='Evaluation metrics (e.g. mAP, mAP_multi, mAP_coco). Valid '
+             'metrics depend on the dataset; unknown ones raise in '
+             'dataset.evaluate().',
     )
     parser.add_argument(
         '--show',
@@ -293,7 +294,10 @@ def main():
             print('Evaluation Results')
             print('=' * 60)
             for metric_name, value in metric_results.items():
-                print(f'  {metric_name}: {value:.4f}')
+                if isinstance(value, (int, float)):
+                    print(f'  {metric_name}: {value:.4f}')
+                else:
+                    print(f'  {metric_name}: {value}')
             print('=' * 60)
 
 

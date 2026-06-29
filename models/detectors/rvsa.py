@@ -3,8 +3,10 @@
 Wraps Backbone + Neck + RVSAHead in an end-to-end detector.
 """
 
+import numpy as np
 import torch
 from mmdet.models.builder import DETECTORS
+from mmrotate.core import multiclass_nms_rotated, rbbox2result
 from mmrotate.models.detectors.base import RotatedBaseDetector
 
 
@@ -85,34 +87,52 @@ class RVSADetector(RotatedBaseDetector):
         losses = self.bbox_head.loss(*loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore)
         return losses
 
-    def simple_test(self, img, img_metas, **kwargs):
+    def simple_test(self, img, img_metas, rescale=False, **kwargs):
         batch_input_shape = tuple(img.size()[-2:])
         for img_meta in img_metas:
             img_meta['batch_input_shape'] = batch_input_shape
         x = self.extract_feat(img)
         outs = self.bbox_head(x, img_metas)
         bbox_list = self.bbox_head.get_bboxes(
-            *outs, img_metas, rescale=kwargs.get('rescale', False))
+            *outs, img_metas, rescale=rescale)
         bbox_results = [
-            bbox_result2result(det_bboxes, det_labels, self.bbox_head.num_classes)
+            rbbox2result(det_bboxes, det_labels, self.bbox_head.num_classes)
             for det_bboxes, det_labels in bbox_list
         ]
         return bbox_results
 
-    def aug_test(self, imgs, img_metas, **kwargs):
-        return self.simple_test(imgs[0], img_metas[0], **kwargs)
+    def aug_test(self, imgs, img_metas, rescale=False, **kwargs):
+        """Test with test-time augmentation.
 
-
-def bbox_result2result(bboxes, labels, num_classes):
-    if bboxes.shape[0] == 0:
-        return [torch.zeros((0, 6), dtype=torch.float32, device=bboxes.device)
-                for _ in range(num_classes)]
-    result = []
-    for i in range(num_classes):
-        mask = labels == i
-        cls_bboxes = bboxes[mask]
-        if cls_bboxes.size(0) > 0:
-            result.append(torch.cat([cls_bboxes[:, :5], cls_bboxes[:, 5:6]], dim=-1))
-        else:
-            result.append(torch.zeros((0, 6), dtype=torch.float32, device=bboxes.device))
-    return result
+        Runs the head on every augmentation, then merges the rotated
+        detections across augmentations with a per-class rotated NMS. Returns
+        the same list-per-image / list-per-class structure as
+        :meth:`simple_test`, with numpy arrays (mmrotate eval format).
+        """
+        num_classes = self.bbox_head.num_classes
+        nms_cfg = dict(type='nms_rotated', iou_thr=0.1)
+        # Per-augmentation results: list (n_aug) of list (n_imgs) of
+        # list (n_classes) of (n, 6) np.ndarray.
+        aug_results = [self.simple_test(img, meta, rescale=rescale)
+                       for img, meta in zip(imgs, img_metas)]
+        num_imgs = len(aug_results[0])
+        merged = []
+        for img_idx in range(num_imgs):
+            merged_img = []
+            for cls in range(num_classes):
+                cls_boxes = [aug_results[a][img_idx][cls]
+                             for a in range(len(aug_results))]
+                cls_boxes = (np.concatenate(cls_boxes, axis=0)
+                             if any(b.shape[0] for b in cls_boxes)
+                             else np.zeros((0, 6), dtype=np.float32))
+                if cls_boxes.shape[0] > 0:
+                    bboxes = torch.from_numpy(
+                        np.ascontiguousarray(cls_boxes[:, :5])).float()
+                    scores = torch.from_numpy(
+                        cls_boxes[:, 5:6]).float()
+                    det_bboxes, _ = multiclass_nms_rotated(
+                        bboxes, scores, 0.0, nms_cfg, -1)
+                    cls_boxes = det_bboxes.cpu().numpy()
+                merged_img.append(cls_boxes)
+            merged.append(merged_img)
+        return merged

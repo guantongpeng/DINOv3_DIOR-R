@@ -14,7 +14,7 @@
 #   - Anchor-free dense prediction (no manual anchor tuning)
 #   - Dual-head: O2M (Task-Aligned) + O2O (Hungarian matching)
 #   - NMS-free end-to-end inference via O2O head
-#   - Angle encoding: sigmoid → [-π/4, 3π/4]
+#   - Angle encoding: sigmoid → [-π/2, π/2] (le90)
 #   - Progressive Loss: shifts supervision from O2M to O2O
 #   - No DFL: lighter regression head
 #
@@ -44,8 +44,8 @@ model = dict(
 
     # -------------------------- Backbone: DINOv3 ViT-B --------------------------
     # DINOv3 ViT-Base with patch_size=16, embed_dim=768, depth=12
-    # Extract features from blocks [3, 5, 7, 11] for multi-scale representation
-    # Freeze first 8 transformer blocks to preserve pretrained features
+    # Extract features from blocks [3, 5, 8, 11] for multi-scale representation
+    # frozen_stages=0 => full fine-tune (all transformer blocks trainable)
     backbone=dict(
         type='DinoVisionTransformerBackbone',
         model_name='dinov3_vitb16',

@@ -54,6 +54,7 @@ class DIORDataset(DOTADataset):
         (255, 255, 0), (147, 116, 116), (0, 0, 255), (220, 20, 60),
         (128, 128, 0), (255, 215, 0), (128, 128, 128), (64, 224, 208),
     ]
+
     def __init__(self,
                  ann_file,
                  pipeline,
@@ -127,7 +128,7 @@ class DIORDataset(DOTADataset):
                         continue
 
                     cls_name = parts[8]
-                    difficulty = int(parts[9]) if len(parts) >= 10 else 0
+                    difficulty = int(parts[9])
 
                     if cls_name not in cls_map:
                         continue

@@ -33,31 +33,11 @@ if _DINOV3_PATH not in sys.path:
 from mmdet.models.builder import MODELS  # noqa: E402
 
 
-# model_name -> (build arch, embed_dim, n_blocks, patch_size)
-_MODEL_SPECS: Dict[str, Dict] = {
-    "dinov3_vits16": {"arch": "vit_small", "embed_dim": 384, "n_blocks": 12, "patch_size": 16},
-    "dinov3_vits16plus": {"arch": "vit_small", "embed_dim": 384, "n_blocks": 12, "patch_size": 16},
-    "dinov3_vitb16": {"arch": "vit_base", "embed_dim": 768, "n_blocks": 12, "patch_size": 16},
-    "dinov3_vitl16": {"arch": "vit_large", "embed_dim": 1024, "n_blocks": 24, "patch_size": 16},
-    "dinov3_vitl16plus": {"arch": "vit_large", "embed_dim": 1024, "n_blocks": 24, "patch_size": 16},
-    "dinov3_vith16plus": {"arch": "vit_huge2", "embed_dim": 1280, "n_blocks": 32, "patch_size": 16},
-    "dinov3_vit7b16": {"arch": "vit_7b", "embed_dim": 4096, "n_blocks": 40, "patch_size": 16},
-}
-
-# LVD1689M checkpoint config (matches the dinov3 hub backbones: 4 storage tokens,
-# mask_k_bias, layernormbf16, RoPE base=100/rescale=2). Built the same way as
-# vit-adapter/dinov3_backbone.py.
-_LVD1689M_CFG = dict(
-    pos_embed_rope_base=100.0,
-    pos_embed_rope_min_period=None,
-    pos_embed_rope_max_period=None,
-    pos_embed_rope_normalize_coords="separate",
-    pos_embed_rope_rescale_coords=2,
-    pos_embed_rope_dtype="fp32",
-    norm_layer="layernormbf16",
-    n_storage_tokens=4,
-    mask_k_bias=True,
-)
+# Shared DINOv3 specs (model_name -> arch/embed_dim/depth/patch_size) and the
+# LVD1689M checkpoint config. Kept in one place so the plain ViT wrapper and
+# the ViT-Adapter backbone stay in sync.
+from ._dinov3_specs import MODEL_SPECS as _MODEL_SPECS
+from ._dinov3_specs import LVD1689M_CFG as _LVD1689M_CFG
 
 
 def _get_default_layers_to_use(n_blocks: int, num_levels: int = 4) -> List[int]:
@@ -116,7 +96,7 @@ class DinoVisionTransformerBackbone(nn.Module):
         spec = _MODEL_SPECS[model_name]
         self.model_name = model_name
         self.embed_dim: int = spec["embed_dim"]
-        self.n_blocks: int = spec["n_blocks"]
+        self.n_blocks: int = spec["depth"]
         self.patch_size: int = spec["patch_size"]
         self.pretrained = pretrained
         self.frozen_stages = frozen_stages

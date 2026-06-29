@@ -69,7 +69,7 @@ class ViTDetFPN(BaseModule):
     Architecture::
 
         ViT features (all stride-16)
-        f0(block 3)   f1(block 5)   f2(block 7)   f3(block 11)
+        f0(block 3)   f1(block 5)   f2(block 8)   f3(block 11)
             |              |              |              |
         lateral0      lateral1      lateral2      lateral3
             |              |              |              |
@@ -162,11 +162,12 @@ class ViTDetFPN(BaseModule):
             norm_cfg=norm_cfg, act_cfg=act_cfg, inplace=False,
         )
 
-        # Progressive upsampling blocks (deep → shallow)
-        # up_2→1: upsample from P2 level by 2× to build P1
-        # up_1→0: upsample from P1 level by 2× to build P0
-        self.upsample_2_1 = UpsampleBlock(out_channels, out_channels, norm_cfg, act_cfg)
-        self.upsample_1_0 = UpsampleBlock(out_channels, out_channels, norm_cfg, act_cfg)
+        # Progressive upsampling blocks (deep → shallow). Each step has its
+        # own weights so different semantic levels are not forced to share an
+        # upsampler. P1 needs one 2x upsample; P0 needs two 2x upsamples.
+        self.upsample_p1 = UpsampleBlock(out_channels, out_channels, norm_cfg, act_cfg)
+        self.upsample_p0_1 = UpsampleBlock(out_channels, out_channels, norm_cfg, act_cfg)
+        self.upsample_p0_2 = UpsampleBlock(out_channels, out_channels, norm_cfg, act_cfg)
 
         # SE channel attention after each fusion
         self.se_blocks = nn.ModuleList()
@@ -231,14 +232,15 @@ class ViTDetFPN(BaseModule):
         # P3 (stride 32): downsample deepest feature f3 (block 11)
         p3_raw = self.downsample(laterals[3])
 
-        # P2 (stride 16): pass-through f2 (block 7)
+        # P2 (stride 16): pass-through f2 (block 8)
         p2_raw = laterals[2]
 
         # P1 (stride 8): upsample f1 (block 5) by 2×
-        p1_raw = self.upsample_2_1(laterals[1])
+        p1_raw = self.upsample_p1(laterals[1])
 
-        # P0 (stride 4): upsample f0 (block 3) by 2× twice (= 4×)
-        p0_raw = self.upsample_1_0(self.upsample_2_1(laterals[0]))
+        # P0 (stride 4): upsample f0 (block 3) by 2× twice (= 4×), using two
+        # independent upsample blocks (do not share weights with the P1 path).
+        p0_raw = self.upsample_p0_2(self.upsample_p0_1(laterals[0]))
 
         # Step 4: Top-down cross-scale fusion with SE attention
         # P3 → P2: upsample P3 by 2×, fuse with P2 lateral
