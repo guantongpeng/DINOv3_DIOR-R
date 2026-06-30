@@ -1,34 +1,41 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Two-stage training: Rotated FCOS + DINOv3 ViT-L/16 + ViT-Adapter (DIOR-R)
+# Two-stage training: YOLO26 head + DINOv3 ViT-L/16 + ViT-Adapter (DIOR-R)
 # =============================================================================
-# ViT-L/16 (1024-d, 24 blocks) with the DINOv3 ViT-Adapter, anchor-free Rotated
-# FCOS head. Pretrained weights:
+# ViT-L/16 (1024-d, 24 blocks) with the DINOv3 ViT-Adapter, anchor-free YOLO26
+# rotated dual-head (O2M + O2O). Pretrained weights:
 #   data/weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
 #
-# Stage 1: frozen ViT  -> train adapter (SPM + deformable interactions) + FPN + FCOS head
-# Stage 2: load stage-1 best, unfreeze ViT, end-to-end fine-tune (backbone @ 0.1x lr)
+# TRAINVAL split: train on the FULL train+val pool (~11.7k images); the held-out
+# TEST split is used for both model selection (val) and final eval (test).
 #
-# lr is calibrated for effective batch 128 (8 GPUs x samples_per_gpu=16, the
-# script default). If you change SAMPLES_PER_GPU / NUM_GPUS, re-scale S1_LR /
-# S2_LR proportionally (e.g. batch 64 -> halve them).
+# Stage 1: frozen ViT  -> train adapter (SPM + deformable interactions) + FPN +
+#                          YOLO26 O2M head (O2O head idle)
+# Stage 2: load stage-1 best, unfreeze ViT, end-to-end fine-tune (backbone @
+#          0.1x lr) and ramp in the O2O head via ProgressiveLossHook
+#
+# lr is calibrated for effective batch 128 (8 GPUs x samples_per_gpu=16). The
+# ViT-L/16 + Adapter is memory-heavy, so the script DEFAULT is
+# SAMPLES_PER_GPU=4 (effective batch 32) — at that batch you should re-scale
+# S1_LR / S2_LR proportionally (~1e-4 / 5e-5), or raise SAMPLES_PER_GPU.
+# If you change SAMPLES_PER_GPU / NUM_GPUS, re-scale the LR linearly.
 #
 # Usage:
-#   bash scripts/fcos_vitl_adapter_trainval.sh                      # stage1 -> stage2
-#   STAGE=1 bash scripts/fcos_vitl_adapter_trainval.sh              # stage 1 only
+#   bash scripts/yolo26_vitl_adapter_trainval.sh                # stage1 -> stage2
+#   STAGE=1 bash scripts/yolo26_vitl_adapter_trainval.sh        # stage 1 only
 #   STAGE=2 STAGE1_CKPT=work_dirs/.../best_mAP_epoch_30.pth \
-#       bash scripts/fcos_vitl_adapter_trainval.sh                  # stage 2 only
-#   STAGE=1 RESUME=1 WORK_DIR=work_dirs/.../rotated_fcos_dinov3_vitl_adapter_trainval_dior_<ts> \
-#       bash scripts/fcos_vitl_adapter_trainval.sh                  # resume interrupted stage 1
+#       bash scripts/yolo26_vitl_adapter_trainval.sh            # stage 2 only
+#   STAGE=1 RESUME=1 WORK_DIR=work_dirs/.../yolo26_dinov3_vitl_adapter_trainval_dior_<ts> \
+#       bash scripts/yolo26_vitl_adapter_trainval.sh            # resume interrupted stage 1
 #
 # Common overrides (environment variables):
 #   CUDA_VISIBLE_DEVICES=0,1,2,3   # GPUs to use
 #   SAMPLES_PER_GPU=4              # batch/GPU (ViT-L is memory-heavy; lower if OOM)
 #   S1_EPOCHS=36                   # stage-1 schedule length
-#   S2_EPOCHS=24                   # stage-2 schedule length
+#   S2_EPOCHS=48                   # stage-2 schedule length
 #   EVAL_INTERVAL=3                # epochs between test-set evals
-#   MASTER_PORT=29512              # DDP port
-#   WORK_DIR=work_dirs/fcos_run    # shared output root (stage1/ and stage2/ inside)
+#   MASTER_PORT=29506              # DDP port
+#   WORK_DIR=work_dirs/yolo26_run  # shared output root (stage1/ and stage2/ inside)
 #   STAGE1_CKPT=<path>             # explicit stage-1 ckpt for stage 2 (else: best)
 #   S1_LR=4e-4 / S2_LR=2e-4        # override base lr (defaults assume batch 128)
 #   RESUME=1                       # resume interrupted stage from <WORK_DIR>/<stage>/latest.pth
@@ -38,14 +45,14 @@
 set -e
 
 # ----------------------------- configuration --------------------------------
-CONFIG_S1='configs/fcos/rotated_fcos_dinov3_vitl_adapter_stage1_trainval_dior.py'
-CONFIG_S2='configs/fcos/rotated_fcos_dinov3_vitl_adapter_stage2_trainval_dior.py'
+CONFIG_S1='configs/yolo26/yolo26_dinov3_vitl_adapter_stage1_trainval_dior.py'
+CONFIG_S2='configs/yolo26/yolo26_dinov3_vitl_adapter_stage2_trainval_dior.py'
 
 STAGE=${STAGE:-all}                 # all | 1 | 2
 CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
 NUM_GPUS=$(echo "${CUDA_VISIBLE_DEVICES}" | tr ',' '
 ' | wc -l)
-MASTER_PORT=${MASTER_PORT:-29512}
+MASTER_PORT=${MASTER_PORT:-29506}
 SAMPLES_PER_GPU=${SAMPLES_PER_GPU:-4}   # ViT-L/16 + Adapter is memory-heavy; lower if OOM
 S1_EPOCHS=${S1_EPOCHS:-36}
 S2_EPOCHS=${S2_EPOCHS:-48}
@@ -54,7 +61,7 @@ STAGE1_CKPT=${STAGE1_CKPT:-}
 RESUME=${RESUME:-0}                 # 1 = resume interrupted stage from <WORK_DIR>/<stage>/latest.pth
 S1_LR=${S1_LR:-}                    # override stage-1 base lr (default 4e-4 in config for batch 128)
 S2_LR=${S2_LR:-}                    # override stage-2 base lr (default 2e-4 in config for batch 128)
-WORK_DIR=${WORK_DIR:-"work_dirs/rotated_fcos_dinov3_vitl_adapter_trainval_dior_$(date +%Y%m%d_%H%M%S)"}
+WORK_DIR=${WORK_DIR:-"work_dirs/yolo26_dinov3_vitl_adapter_trainval_dior_$(date +%Y%m%d_%H%M%S)"}
 
 S1_DIR="${WORK_DIR}/stage1"
 S2_DIR="${WORK_DIR}/stage2"
@@ -68,23 +75,26 @@ export NCCL_DEBUG=WARN
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Resolve a python that has torch. The plain `python` may land in the base conda
-# env (no torch) -> "No module named 'torch'". Fall back to the mmdet env.
+# env (no torch) -> "No module named 'torch'". Fall back to a known env.
 PYTHON=${PYTHON:-python}
 if ! ${PYTHON} -c "import torch" >/dev/null 2>&1; then
-    if [ -x /root/miniconda3/envs/mmdet/bin/python ]; then
-        PYTHON=/root/miniconda3/envs/mmdet/bin/python
-        echo "NOTE: '${PYTHON:-python}' check: default python lacks torch; using ${PYTHON}"
-    else
-        echo "ERROR: no python with torch found. 'conda activate mmdet' or set PYTHON=<path>."
-        exit 1
-    fi
+    for cand in /root/miniconda3/envs/mmdet/bin/python /root/miniconda3/envs/olmoearth/bin/python; do
+        if [ -x "${cand}" ] && "${cand}" -c "import torch" >/dev/null 2>&1; then
+            PYTHON="${cand}"
+            echo "NOTE: default python lacks torch; using ${PYTHON}"
+            break
+        fi
+    done
+fi
+if ! ${PYTHON} -c "import torch" >/dev/null 2>&1; then
+    echo "ERROR: no python with torch found. Activate the right conda env or set PYTHON=<path>."
+    exit 1
 fi
 
 # ----------------------------- sanity checks --------------------------------
 for c in "${CONFIG_S1}" "${CONFIG_S2}"; do
     if [ ! -f "${c}" ]; then echo "ERROR: config not found: ${c}"; exit 1; fi
 done
-
 
 mkdir -p "${S1_DIR}" "${S2_DIR}"
 
@@ -125,7 +135,7 @@ if [ "${STAGE}" = "all" ] || [ "${STAGE}" = "1" ]; then
         EXTRA_S1="${EXTRA_S1} optimizer.lr=${S1_LR}"
     fi
 
-    echo "########## STAGE 1: frozen DINOv3 ViT ##########"
+    echo "########## STAGE 1: frozen DINOv3 ViT-L (O2M-only) ##########"
     echo "Mode      : ${S1_MODE}"
     echo "GPUs      : ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS})"
     echo "Batch/GPU : ${SAMPLES_PER_GPU} (effective = $((SAMPLES_PER_GPU * NUM_GPUS)))"
@@ -171,7 +181,7 @@ if [ "${STAGE}" = "all" ] || [ "${STAGE}" = "2" ]; then
         EXTRA_S2="${EXTRA_S2} optimizer.lr=${S2_LR}"
     fi
 
-    echo "########## STAGE 2: end-to-end fine-tune ##########"
+    echo "########## STAGE 2: end-to-end fine-tune (O2O ramp) ##########"
     echo "GPUs       : ${CUDA_VISIBLE_DEVICES} (${NUM_GPUS})"
     echo "Batch/GPU  : ${SAMPLES_PER_GPU} (effective = $((SAMPLES_PER_GPU * NUM_GPUS)))"
     echo "Epochs     : ${S2_EPOCHS} (eval every ${EVAL_INTERVAL})"
