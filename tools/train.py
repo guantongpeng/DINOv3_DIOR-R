@@ -338,11 +338,22 @@ def main():
         frozen_stages = backbone_cfg.get('frozen_stages', -1)
         freeze_vit = backbone_cfg.get('freeze_vit', False)
         progressive_cfg = (cfg.model.get('train_cfg') or {}).get('progressive_loss', None)
-        if frozen_stages >= 0 or progressive_cfg is not None or freeze_vit:
+        # ProgressiveLossHook is registered via custom_hooks (NOT train_cfg).
+        # While its O2O ramp is < 1.0, forward_train skips the O2O head entirely,
+        # so those params never receive gradients -> DDP needs
+        # find_unused_parameters=True or it crashes (params 683..714 unused).
+        custom_hooks = cfg.get('custom_hooks', []) or []
+        has_progressive_hook = any(
+            isinstance(h, dict) and h.get('type') == 'ProgressiveLossHook'
+            for h in custom_hooks)
+        if (frozen_stages >= 0 or progressive_cfg is not None
+                or freeze_vit or has_progressive_hook):
             cfg.find_unused_parameters = True
             logger.info(
-                'find_unused_parameters=True (frozen_stages=%s, freeze_vit=%s, progressive_loss=%s)',
+                'find_unused_parameters=True (frozen_stages=%s, freeze_vit=%s, '
+                'progressive_loss=%s, progressive_hook=%s)',
                 frozen_stages, freeze_vit, progressive_cfg is not None,
+                has_progressive_hook,
             )
         else:
             cfg.find_unused_parameters = False
